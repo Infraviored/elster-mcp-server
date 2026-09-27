@@ -20,7 +20,7 @@
  */
 export function installDriver(): string {
   const w = window as any;
-  if (w.EO && w.EO.version === 9) return 'already installed';
+  if (w.EO && w.EO.version === 10) return 'already installed';
 
   // ── Safety ──────────────────────────────────────────────────────────────
   // ALLOWLIST: the only reqCmd names this engine may post. Anything else —
@@ -109,7 +109,7 @@ export function installDriver(): string {
   };
 
   const EO: any = {
-    version: 9,
+    version: 10,
     doc: document as Document,
     url: location.href,
 
@@ -133,8 +133,15 @@ export function installDriver(): string {
     },
 
     async load(url: string) {
+      // Even a GET can act (/eportal/abmelden logs out). Only same-origin
+      // /eportal/ paths, resolved first so "../" cannot escape, then screened.
+      const target = new URL(url, location.origin);
+      if (target.origin !== location.origin || !target.pathname.startsWith('/eportal/')) {
+        throw new Error(`refused: load outside /eportal/: ${target.href}`);
+      }
+      guardText(target.pathname + target.search);
       this.lastRid = null;
-      const r = await fetch(url, { credentials: 'include', redirect: 'follow' });
+      const r = await fetch(target.href, { credentials: 'include', redirect: 'follow' });
       this._parse(await r.text(), r.url);
       return { status: r.status, url: r.url, title: this.title() };
     },
@@ -205,7 +212,8 @@ export function installDriver(): string {
       if (/\/(sign|rpc)\b|versenden/i.test(action)) throw new Error(`refused: form posts to ${action}`);
       const method = (f.getAttribute('method') || 'post').toUpperCase();
       const r = method === 'GET'
-        ? await fetch(action + '?' + body.toString(), { credentials: 'include', redirect: 'follow' })
+        ? await fetch((() => { const u = new URL(action); body.forEach((v, k) => u.searchParams.append(k, v)); return u.href; })(),
+            { credentials: 'include', redirect: 'follow' })
         : await fetch(action, { method: 'POST', body, credentials: 'include', redirect: 'follow' });
       this._parse(await r.text(), r.url);
       return { status: r.status, url: r.url, title: this.title() };
@@ -487,9 +495,20 @@ export function installDriver(): string {
       let a = this.doc.getElementById('verlassenModal');
       if (!a) { await this.enterEditMode(); a = this.doc.getElementById('verlassenModal'); }
       if (!a) throw new Error('no "Speichern und Formular verlassen" on the current page');
+      // The modal endpoint and its one command are fixed; do not trust the
+      // page to name another URL or command for this credentialed POST.
+      const source = new URL(a.getAttribute('data-source') || '/eportal/interpretermodal', location.origin);
+      if (source.origin !== location.origin || source.pathname !== '/eportal/interpretermodal') {
+        throw new Error(`refused: save modal from unexpected URL ${source.href}`);
+      }
+      let modalCmd: any;
+      try { modalCmd = JSON.parse(a.getAttribute('data-req-cmd') || ''); } catch { modalCmd = null; }
+      if (!modalCmd || Object.keys(modalCmd).length !== 1 || !modalCmd.SpeichernUndVerlassenModalCommand) {
+        throw new Error('refused: unexpected save-modal command');
+      }
       const fd = new FormData();
-      fd.append('reqCmd', a.getAttribute('data-req-cmd') || '');
-      const r = await fetch(a.getAttribute('data-source') || '/eportal/interpretermodal', {
+      fd.append('reqCmd', JSON.stringify(modalCmd));
+      const r = await fetch(source.href, {
         method: 'POST', body: fd, credentials: 'include',
         headers: { 'x-csrf-token': this.csrf() || '', eopfetchtype: 'interactive' },
       });
@@ -532,6 +551,8 @@ export function installDriver(): string {
      */
     async newForm(slug: string, year: number, anlagen: string[] | null, takeover: string | null, importEdaten: boolean) {
       const steps: string[] = [];
+      if (!/^[a-z0-9_-]{2,40}$/i.test(slug)) throw new Error(`invalid form slug "${slug}"`);
+      if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new Error(`invalid year ${year}`);
       await this.load(`/eportal/formulare-leistungen/alleformulare/${slug}`);
       const sel = this.doc.getElementById('zeitraumJahr') as HTMLSelectElement | null;
       if (!sel) throw new Error(`form "${slug}" has no year selection (${this.title()})`);

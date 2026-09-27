@@ -469,3 +469,15 @@ abgelehnt, `review()` verlässt die Absendeseite im `finally`, `CSS.escape` im L
 Nicht übernommen: „Re-Login übersprungen, weil page.url() auf meinelster bleibt" —
 `ensureLoggedIn` navigiert per `page.goto(start)` bevor es die URL prüft.
 Selftest: 45 Prüfungen offline; Live-Smoke gegen ELSTER bestanden.
+
+## Conductor-Review Runde 2 — umgesetzt
+
+Senden/Löschen/Support laut Reviewer dicht. Gefunden und behoben:
+- `elster_form_new({form:"../../abmelden"})` → GET auf /eportal/abmelden = Logout. Jetzt:
+  Slug `^[a-z0-9_-]{2,40}$` (Node + Treiber), `load()` nur same-origin `/eportal/…`, nach
+  URL-Auflösung (kein `../`) durch die Textsperre (logout|abmelden|sign|rpc|…).
+- `saveDraft` postete an `data-source` aus dem Seiten-HTML mit beliebigem `data-req-cmd` →
+  fest `/eportal/interpretermodal` + nur `SpeichernUndVerlassenModalCommand`.
+- `parseEoprint` auf Live-Seiten: `<h1>` vor `.modal__title` (alter B1).
+- GET-Formulare: Query per `URL.searchParams` zusammenführen.
+Selftest läuft jetzt unter dem echten Origin (Request-Interception, kein Netz): 51 Prüfungen.

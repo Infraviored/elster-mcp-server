@@ -104,11 +104,12 @@ export async function parseEoprint(page: Page, fragment?: string): Promise<Eopri
       return { value: text, source };
     };
 
-    const title = clean(
-      root.querySelector('.modal__title')?.textContent
-      ?? root.querySelector('h1')?.textContent
-      ?? document.title,
-    );
+    // A protocol fragment is a modal: its title names it. On a live page any
+    // open modal ("Ihre Sitzung läuft ab") would hijack that, so the page's
+    // own <h1> wins there (old finding B1).
+    const title = clean(frag == null
+      ? (root.querySelector('h1')?.textContent ?? root.querySelector('.modal__title')?.textContent ?? document.title)
+      : (root.querySelector('.modal__title')?.textContent ?? root.querySelector('h1')?.textContent ?? document.title));
 
     // Header block of a protocol: bounded by the next known label, because the
     // values themselves contain colons ("Eingang auf Server: …, 23:32:07").

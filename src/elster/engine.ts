@@ -194,6 +194,10 @@ export class ElsterEngine extends ElsterBase {
   }
 
   async newForm(opts: { form: string; year: number; anlagen?: string[]; takeover?: string; importEdaten?: boolean }) {
+    if (!/^[a-z0-9_-]{2,40}$/i.test(opts.form)) throw new Error(`Refused: invalid form slug "${opts.form}".`);
+    if (opts.takeover != null && !/^\d{1,15}$/.test(String(opts.takeover))) {
+      throw new Error(`Refused: takeover must be a numeric aufgabeId, got "${opts.takeover}".`);
+    }
     const res = await this.call<any>('newForm', opts.form, opts.year, opts.anlagen ?? null,
       opts.takeover ?? null, opts.importEdaten ?? true);
     return { ...res, page: await this.summary() };

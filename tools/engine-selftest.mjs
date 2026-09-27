@@ -40,14 +40,21 @@ t('takeover year unique', () => pickCandidate([c('1', 2024), c('2', 2023)], { mo
 // 1+4+5 driver in a real browser
 const b = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
 const p = await b.newPage();
-await p.setContent(`<form id="form" action="/x" method="post"><input name="_csrf" value="t"><input type="text" name="fields[a]" value="">
+// Serve the test page under the real portal origin without touching the network,
+// so origin checks behave as in the logged-in ELSTER tab.
+const TEST_HTML = `<form id="form" action="/x" method="post"><input name="_csrf" value="t"><input type="text" name="fields[a]" value="">
   <button id="b1" name="action" value="SENDEN">Weiter</button>
   <button id="b2" name="cmd" value='{"SwitchModus":{"target":"SENDEN"}}'>Weiter</button>
   <button id="loescheEntwurf_1" name="reqCmd" value='{"OeffneAufgabeCommand":{"aufgabeId":1}}'>Öffnen</button>
   <button id="b3" name="reqCmd" value='{"DeleteEntwurfAufgabeCommand":{"aufgabeId":1}}'>Weiter</button>
   <button id="b4" name="reqCmd" value='{"Continue":{}}'>Entwurf löschen</button>
   <button id="ok" name="reqCmd" value='{"Continue":{"ignoreSkippableErrors":false}}'>Weiter</button>
-  </form>`);
+  </form>`;
+await p.setRequestInterception(true);
+p.on('request', r => r.url().startsWith('https://www.elster.de/')
+  ? r.respond({ status: 200, contentType: 'text/html; charset=utf-8', body: TEST_HTML })
+  : r.abort());
+await p.goto('https://www.elster.de/eportal/selftest');
 await p.evaluate(() => {
   // No network in the self-test: every POST answers with a minimal form page.
   window.fetch = async () => new Response('<html><body><h1>stub</h1><form id="form" action="/x"></form></body></html>');
@@ -78,7 +85,13 @@ await drv('versenden without slash', `EO.url='https://www.elster.de/eportal/inte
 await drv('post lowercase senden', `EO.url='https://www.elster.de/eportal/x'; return EO.post('{"senden":{}}')`, true);
 await drv('post DeleteAufgabe', `return EO.post('{"DeleteAufgabe":{}}')`, true);
 await drv('post JumpToPage sets lastRid', `EO.doc=new DOMParser().parseFromString('<form id="form" action="/x"></form>','text/html'); EO.url='https://www.elster.de/eportal/x'; EO.lastRid='FormData://old'; await EO.post({JumpToPage:{target:{'FormData-RID':{rid:'FormData://new'}}}}); return EO.lastRid`, false, null, 'FormData://new');
-await drv('load clears lastRid', `EO.lastRid='FormData://old'; try { await EO.load('about:blank'); } catch(e) {} return EO.lastRid`, false);
+await drv('load path traversal to abmelden', `return EO.load('/eportal/formulare-leistungen/alleformulare/../../abmelden')`, true, 'abmelden');
+await drv('load logout', `return EO.load('/eportal/logout')`, true, 'logout');
+await drv('load other origin', `return EO.load('https://example.com/eportal/x')`, true, 'outside');
+await drv('newForm bad slug', `return EO.newForm('../../abmelden', 2025, null, null, true)`, true, 'invalid form slug');
+await drv('saveDraft foreign modal URL', `EO.doc=new DOMParser().parseFromString('<a id="verlassenModal" data-source="/eportal/rpc" data-req-cmd=\\'{"SpeichernUndVerlassenModalCommand":{}}\\'></a>','text/html'); return EO.saveDraft()`, true, 'unexpected URL');
+await drv('saveDraft foreign modal command', `EO.doc=new DOMParser().parseFromString('<a id="verlassenModal" data-source="/eportal/interpretermodal" data-req-cmd=\\'{"SendAufgabe":{}}\\'></a>','text/html'); return EO.saveDraft()`, true, 'unexpected save-modal');
+await drv('load clears lastRid', `EO.lastRid='FormData://old'; await EO.load('/eportal/meinelster'); return EO.lastRid`, false);
 await b.close();
 console.log(fail ? `\n${fail} FAILED` : '\nALL PASSED');
 process.exit(fail ? 1 : 0);
