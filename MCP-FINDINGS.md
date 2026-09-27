@@ -455,3 +455,17 @@ Engine nie angesprochen.
 7. `elster_edaten_fetch` meldete fälschlich einen angelegten Entwurf.
 
 Abgesichert durch `tools/engine-selftest.mjs` (offline, 23 Prüfungen).
+
+## Conductor-Review Runde 1 (Gemini 3.8 Flash) — umgesetzt
+
+Blocklist war nicht dicht: `press()` prüfte Knopfwerte nur bei `name="reqCmd"`; `/Senden/`
+case-sensitiv (`senden`, `Send`, `SendAufgabe` durch); Löschen nur als
+`DeleteEntwurfAufgabe` erkannt (nicht `loescheEntwurf_<id>`, `DeleteAufgabe`); `/versenden/`
+nur mit Slash. → **Erlaubnisliste** für Befehlsnamen und SwitchModus-Ziele, Textsperre als
+zweite Linie für ids/Namen/Beschriftungen/Werte und Form-Actions (`/sign`, `/rpc`).
+Außerdem: `belegeList`/`belegUpload` laufen über den Neu-Login (`withSession`),
+`JumpToPage` per `post` setzt die gemerkte RID, `press` mit buttonId+command wird
+abgelehnt, `review()` verlässt die Absendeseite im `finally`, `CSS.escape` im Legacy-Filler.
+Nicht übernommen: „Re-Login übersprungen, weil page.url() auf meinelster bleibt" —
+`ensureLoggedIn` navigiert per `page.goto(start)` bevor es die URL prüft.
+Selftest: 45 Prüfungen offline; Live-Smoke gegen ELSTER bestanden.

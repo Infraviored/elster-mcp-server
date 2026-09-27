@@ -152,11 +152,15 @@ Invariants — do not weaken:
 - **The tab is never navigated after login.** `form.submit()` / `location.href` from an
   evaluate left Chrome's renderer permanently hung twice; `fetch` never did. All page state
   lives in the parsed `EO.doc`.
-- **The engine cannot send.** `ElsterEngine.assertCommand` and the driver's `guard` both
-  refuse `target:"SENDEN"`, `Absenden`, `Senden`, `Übermittl…`, `DeleteEntwurfAufgabe`,
-  `Logout`. Commands are **parsed and re-serialised before matching** (so `\u0053ENDEN`
-  escapes are decoded) and must have exactly one command name; the canonical text is
-  what gets posted. Checks stop at `SwitchModus{target:"PRUEFEN"}`.
+- **The engine cannot send or delete.** Commands go through an **allowlist**
+  (`ALLOWED_COMMANDS` / `ALLOWED_MODES`, duplicated in `engine.ts` and `engine-driver.ts` —
+  keep them in sync): a command is parsed and re-serialised (JSON escapes decoded), must
+  have exactly one name, that name must be on the list, and `SwitchModus` may only target
+  EINGABE, PRUEFEN, ANLAGENAUSWAHL, AUTOVAST_ENTRY or VAST. The canonical text is what gets
+  posted. A text blocklist (send, übermittl, delete except DeleteMzbItem, lösch, logout,
+  /sign, /rpc) additionally screens button ids, names, labels and values, and form actions.
+  Do not "fix" a blocked flow by widening the blocklist logic; add the one command it
+  needs to the allowlist, with a selftest case.
 - **One narrow exception, approved by the user on 27.09.2026:** `elster_form_review` enters
   the "Formular absenden" overview with the exact string
   `{"SwitchModus":{…"target":"SENDEN"…}}` (what a human's "Weiter" posts after a clean

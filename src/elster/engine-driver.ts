@@ -20,18 +20,39 @@
  */
 export function installDriver(): string {
   const w = window as any;
-  if (w.EO && w.EO.version === 8) return 'already installed';
+  if (w.EO && w.EO.version === 9) return 'already installed';
 
-  // Commands that transmit, delete or otherwise leave the "fill and check"
-  // envelope. Refused here as a second line of defence behind the Node side.
+  // ── Safety ──────────────────────────────────────────────────────────────
+  // ALLOWLIST: the only reqCmd names this engine may post. Anything else —
+  // including commands nobody has seen yet — is refused. A blocklist can never
+  // be complete (reviews found "senden", "DeleteAufgabe", loescheEntwurf_… all
+  // slipping past one); an allowlist fails closed. Keep in sync with
+  // ALLOWED_COMMANDS in engine.ts; tools/engine-selftest.mjs checks both.
+  const ALLOWED_COMMANDS = new Set([
+    'JumpToPage', 'JumpToItemCause', 'NextPage', 'PreviousPage', 'ToggleNavItem', 'Refresh', 'CheckAll',
+    'SwitchModus',
+    'AddMzbItem', 'CreateMzbItem', 'UpdateMzbItem', 'EditMzbItem', 'DeleteMzbItem', 'EditDetachedMzbSemIndex',
+    'FillInProfile',
+    'Enter', 'Continue', 'Cancel', 'FruehereAbgabeCommand',
+    'OeffneAufgabeCommand', 'OeffneLetztenEntwurfCommand', 'SaveAufgabe', 'Finish',
+  ]);
+  // SwitchModus may only move between editing, checking and the Anlagen/eDaten
+  // selection. SENDEN is the send overview (review() only), TRANSFERAUFGABE
+  // sends a support request.
+  const ALLOWED_MODES = new Set(['EINGABE', 'PRUEFEN', 'ANLAGENAUSWAHL', 'AUTOVAST_ENTRY', 'VAST']);
+
+  // Second line of defence on anything that is text: button ids, names, values.
+  // DeleteMzbItem (removing a row inside the form) is legitimate; deleting a
+  // draft or a receipt is not.
   const FORBIDDEN = [
-    /"target"\s*:\s*"SENDEN"/i,
-    /Absenden/i,
-    /Senden/,
-    /Uebermittl|Übermittl/i,
-    /DeleteEntwurfAufgabe/i,
-    /Logout/i,
+    /send/i,
+    /uebermittl|übermittl/i,
+    /delete(?!mzbitem)/i,
+    /l(oe|ö)sch/i,
+    /logout|abmelden/i,
+    /\/(sign|rpc)\b/i,
   ];
+
   // The one exception (explicitly approved by the user, 27.09.2026): showing
   // the "Formular absenden" overview is the same SwitchModus a human's "Weiter"
   // posts after a clean Prüfung. It displays the final data; transmitting needs
@@ -41,19 +62,20 @@ export function installDriver(): string {
   const REVIEW_CMD = '{"SwitchModus":{"ignoreSkippableErrors":false,"target":"SENDEN","force":false}}';
   let reviewing = false;
 
-  /** Plain strings (button ids, labels): pattern check only. */
+  /** Plain strings (button ids, names, values): pattern check only. */
   const guardText = (s: string) => {
     for (const re of FORBIDDEN) {
       if (re.test(s)) throw new Error(`refused (send/delete/logout): ${s.slice(0, 160)}`);
     }
   };
 
+  const onSendingPage = (url: string) => /versenden|\/sign\b/i.test(url);
+
   /**
-   * reqCmd JSON: parse and re-serialise before checking, so escapes like
-   * "\u0053ENDEN" are decoded to what ELSTER will read, and return that
-   * canonical text — it is what gets posted, so the checked command and the
-   * sent command are the same bytes. A command is one JSON object with
-   * exactly one command name; anything else is refused.
+   * reqCmd JSON: parsed and re-serialised (so "\u0053ENDEN" escapes decode to
+   * what ELSTER reads), exactly one command name, that name on the allowlist,
+   * SwitchModus only to an allowed mode. Returns the canonical text — it is
+   * what gets posted, so the checked command and the sent one are identical.
    */
   const guard = (cmd: string): { text: string; name: string; body: any } => {
     let obj: any;
@@ -63,8 +85,14 @@ export function installDriver(): string {
     }
     const text = JSON.stringify(obj);
     const name = Object.keys(obj)[0];
-    if (!(reviewing && text === REVIEW_CMD)) guardText(text);
-    return { text, name, body: obj[name] };
+    const body = obj[name];
+    if (reviewing && text === REVIEW_CMD) return { text, name, body };
+    if (!ALLOWED_COMMANDS.has(name)) throw new Error(`refused: command "${name}" is not on the allowlist`);
+    if (name === 'SwitchModus' && !ALLOWED_MODES.has(body?.target)) {
+      throw new Error(`refused: SwitchModus target "${body?.target}" is not allowed`);
+    }
+    guardText(text);
+    return { text, name, body };
   };
 
   const clean = (s: string | null | undefined) => (s || '').replace(/\s+/g, ' ').trim();
@@ -81,7 +109,7 @@ export function installDriver(): string {
   };
 
   const EO: any = {
-    version: 8,
+    version: 9,
     doc: document as Document,
     url: location.href,
 
@@ -116,10 +144,12 @@ export function installDriver(): string {
       const checked = guard(typeof reqCmd === 'string' ? reqCmd : JSON.stringify(reqCmd));
       const cmd = checked.text;
       // On the sending page the only way anywhere is back to editing/checking.
-      if (/\/versenden\//.test(this.url)
+      if (onSendingPage(this.url)
           && !(checked.name === 'SwitchModus' && ['EINGABE', 'PRUEFEN'].includes(checked.body?.target))) {
         throw new Error(`refused: only SwitchModus EINGABE/PRUEFEN allowed on the sending page, got ${cmd.slice(0, 120)}`);
       }
+      const jumpRid: string | undefined = checked.name === 'JumpToPage'
+        ? checked.body?.target?.['FormData-RID']?.rid : undefined;
       const f = this.form();
       if (!f) throw new Error(`current page has no #form (${this.url})`);
       const body = serialize(f);
@@ -134,22 +164,34 @@ export function installDriver(): string {
         this.lastRid = null;
       }
       const action = new URL(f.getAttribute('action') || this.url, this.url).href;
+      if (/\/(sign|rpc)\b/i.test(action)) throw new Error(`refused: form posts to ${action}`);
       const r = await fetch(action, { method: 'POST', body, credentials: 'include', redirect: 'follow' });
       this._parse(await r.text(), r.url);
+      if (jumpRid) this.lastRid = jumpRid;
       return { status: r.status, url: r.url, title: this.title() };
     },
 
     /** Presses a submit button by id: posts its own form with its name/value. */
     async press(buttonId: string, overrides: Record<string, string | null> = {}, appends: [string, string][] = []) {
-      if (/\/versenden\//.test(this.url)) {
+      if (onSendingPage(this.url)) {
         throw new Error('refused: no button presses on the sending page ("Absenden" has no command value to screen)');
       }
       const b = this.doc.getElementById(buttonId) as HTMLButtonElement | null;
       if (!b) throw new Error(`no button #${buttonId} on ${this.url}`);
-      if (/absenden|senden/i.test(b.textContent || '')) guardText('Absenden');
+      // Screen everything the press would reveal: id, visible text, name, value.
       guardText(buttonId);
-      // reqCmd buttons carry JSON commands; screen them like post() does.
-      const value = b.name === 'reqCmd' && b.value ? guard(b.value).text : b.value;
+      guardText(clean(b.textContent));
+      guardText(b.name || '');
+      // reqCmd buttons carry JSON commands: allowlist + canonical form. Any other
+      // named button must not carry a value that looks like a command at all.
+      let value = b.value;
+      if (b.name === 'reqCmd') {
+        if (!b.value) throw new Error(`refused: reqCmd button #${buttonId} has no command`);
+        value = guard(b.value).text;
+      } else {
+        guardText(b.value || '');
+        if (/^\s*[{\[]/.test(b.value || '')) throw new Error(`refused: button #${buttonId} carries JSON outside reqCmd`);
+      }
       const f = (b.form || b.closest('form')) as HTMLFormElement | null;
       if (!f) throw new Error(`button #${buttonId} has no form`);
       const body = serialize(f);
@@ -160,6 +202,7 @@ export function installDriver(): string {
       if (b.name) body.set(b.name, value);
       this.lastRid = null;
       const action = new URL(f.getAttribute('action') || this.url, this.url).href;
+      if (/\/(sign|rpc)\b|versenden/i.test(action)) throw new Error(`refused: form posts to ${action}`);
       const method = (f.getAttribute('method') || 'post').toUpperCase();
       const r = method === 'GET'
         ? await fetch(action + '?' + body.toString(), { credentials: 'include', redirect: 'follow' })
@@ -424,13 +467,16 @@ export function installDriver(): string {
       if (!c.ok) return { ok: false, check: c, html: null };
       reviewing = true;
       try { await this.post(REVIEW_CMD); } finally { reviewing = false; }
-      if (!/\/versenden\//.test(this.url)) {
-        return { ok: false, check: c, html: null, note: `overview not reached (${this.url})` };
+      // Whatever happens while reading, leave the sending page again.
+      try {
+        if (!onSendingPage(this.url)) {
+          return { ok: false, check: c, html: null, note: `overview not reached (${this.url})` };
+        }
+        const box = this.doc.querySelector('.sendingPage') || this.doc.querySelector('main');
+        return { ok: true, check: { result: c.result }, html: box ? box.innerHTML : '' };
+      } finally {
+        if (onSendingPage(this.url)) await this.enterEditMode();
       }
-      const box = this.doc.querySelector('.sendingPage') || this.doc.querySelector('main');
-      const html = box ? box.innerHTML : '';
-      await this.enterEditMode();
-      return { ok: true, check: { result: c.result }, html, back: this.url };
     },
 
     async enterEditMode() {

@@ -25,15 +25,27 @@ export class ElsterEngine extends ElsterBase {
   private queue: Promise<unknown> = Promise.resolve();
   private loggedIn = false;
 
+  /** Keep in sync with ALLOWED_COMMANDS / ALLOWED_MODES in engine-driver.ts. */
+  static readonly ALLOWED_COMMANDS = new Set([
+    'JumpToPage', 'JumpToItemCause', 'NextPage', 'PreviousPage', 'ToggleNavItem', 'Refresh', 'CheckAll',
+    'SwitchModus',
+    'AddMzbItem', 'CreateMzbItem', 'UpdateMzbItem', 'EditMzbItem', 'DeleteMzbItem', 'EditDetachedMzbSemIndex',
+    'FillInProfile',
+    'Enter', 'Continue', 'Cancel', 'FruehereAbgabeCommand',
+    'OeffneAufgabeCommand', 'OeffneLetztenEntwurfCommand', 'SaveAufgabe', 'Finish',
+  ]);
+  static readonly ALLOWED_MODES = new Set(['EINGABE', 'PRUEFEN', 'ANLAGENAUSWAHL', 'AUTOVAST_ENTRY', 'VAST']);
+
   private static readonly FORBIDDEN = [
-    /"target"\s*:\s*"SENDEN"/i,
-    /Absenden/i,
-    /Senden/,
-    /Uebermittl|Übermittl/i,
-    /DeleteEntwurfAufgabe/i,
-    /Logout/i,
+    /send/i,
+    /uebermittl|übermittl/i,
+    /delete(?!mzbitem)/i,
+    /l(oe|ö)sch/i,
+    /logout|abmelden/i,
+    /\/(sign|rpc)\b/i,
   ];
 
+  /** Text check for button ids and similar plain strings. */
   static assertAllowed(what: string): void {
     for (const re of ElsterEngine.FORBIDDEN) {
       if (re.test(what)) {
@@ -44,9 +56,10 @@ export class ElsterEngine extends ElsterBase {
   }
 
   /**
-   * Checks a reqCmd the same way the driver does: parsed and re-serialised,
-   * so JSON escapes cannot smuggle "SENDEN" past a text match. Returns the
-   * canonical text, which is what gets posted.
+   * Checks a reqCmd the same way the driver does: parsed and re-serialised
+   * (so JSON escapes cannot hide anything), exactly one command name, name on
+   * the allowlist, SwitchModus only to an allowed mode. Returns the canonical
+   * text, which is what gets posted.
    */
   static assertCommand(command: string | object): string {
     let obj: any = command;
@@ -55,6 +68,13 @@ export class ElsterEngine extends ElsterBase {
     }
     if (!obj || typeof obj !== 'object' || Array.isArray(obj) || Object.keys(obj).length !== 1) {
       throw new Error('Refused: a command must be a JSON object with exactly one command name.');
+    }
+    const name = Object.keys(obj)[0];
+    if (!ElsterEngine.ALLOWED_COMMANDS.has(name)) {
+      throw new Error(`Refused: command "${name}" is not on the engine's allowlist.`);
+    }
+    if (name === 'SwitchModus' && !ElsterEngine.ALLOWED_MODES.has(obj[name]?.target)) {
+      throw new Error(`Refused: SwitchModus target "${obj[name]?.target}" is not allowed.`);
     }
     const text = JSON.stringify(obj);
     ElsterEngine.assertAllowed(text);
@@ -110,28 +130,31 @@ export class ElsterEngine extends ElsterBase {
    * gone — logs in again and retries once. A retry after re-login starts from
    * a fresh session: an open form is closed server-side and must be reopened.
    */
-  private async call<T>(method: string, ...args: unknown[]): Promise<T> {
+  /**
+   * Runs `fn` with a logged-in page, serialized. If it fails while the session
+   * is dead — or leaves the driver on a logged-out URL — logs in again and
+   * retries once. After a re-login an open form is closed server-side and
+   * must be reopened.
+   */
+  private async withSession<T>(label: string, fn: (page: Page) => Promise<T>): Promise<T> {
     return this.serial(async () => {
       for (let attempt = 1; attempt <= 2; attempt++) {
         const page = await this.ensurePage();
         let result: T;
         try {
-          result = await page.evaluate(
-            (m: string, a: unknown[]) => (window as any).EO[m](...a),
-            method, args,
-          ) as T;
+          result = await fn(page);
         } catch (e) {
           if (attempt === 1 && !(await this.sessionAlive(page))) {
-            log.warn(`[engine] ${method} failed on a dead session, logging in again`);
+            log.warn(`[engine] ${label} failed on a dead session, logging in again`);
             this.loggedIn = false;
             await page.evaluate(() => { (window as any).EO = undefined; }).catch(() => {});
             continue;
           }
           throw e;
         }
-        const url = await page.evaluate(() => (window as any).EO.url as string);
-        if (attempt === 1 && ElsterEngine.LOGGED_OUT.test(url)) {
-          log.warn('[engine] session ended, logging in again');
+        const url = await page.evaluate(() => (window as any).EO?.url as string | undefined).catch(() => undefined);
+        if (attempt === 1 && url && ElsterEngine.LOGGED_OUT.test(url)) {
+          log.warn(`[engine] ${label}: session ended, logging in again`);
           this.loggedIn = false;
           continue;
         }
@@ -139,6 +162,14 @@ export class ElsterEngine extends ElsterBase {
       }
       throw new Error('ELSTER session could not be restored');
     });
+  }
+
+  /** Calls a driver method inside the tab (see withSession for re-login). */
+  private async call<T>(method: string, ...args: unknown[]): Promise<T> {
+    return this.withSession(method, page => page.evaluate(
+      (m: string, a: unknown[]) => (window as any).EO[m](...a),
+      method, args,
+    ) as Promise<T>);
   }
 
   private summary(withNav = true) {
@@ -208,10 +239,7 @@ export class ElsterEngine extends ElsterBase {
 
   /** Receipts in "Meine Belege", optionally filtered by year. Read-only. */
   async belegeList(year?: number) {
-    return this.serial(async () => {
-      const page = await this.ensurePage();
-      return page.evaluate(listBelegeInPage, year ? String(year) : null);
-    });
+    return this.withSession('belegeList', page => page.evaluate(listBelegeInPage, year ? String(year) : null));
   }
 
   /**
@@ -220,14 +248,13 @@ export class ElsterEngine extends ElsterBase {
    * any return. Images are converted to PDF in a throwaway tab.
    */
   async belegUpload(input: BelegUploadInput) {
-    return this.serial(async () => {
-      const page = await this.ensurePage();
-      const prepared = await prepareBeleg(input, () => this.browser!.newPage());
-      return page.evaluate(postBelegInPage, prepared);
-    });
+    // Prepare outside the retry: reading and converting the file is not session-bound.
+    const prepared = await this.withSession('prepareBeleg', () => prepareBeleg(input, () => this.browser!.newPage()));
+    return this.withSession('belegUpload', page => page.evaluate(postBelegInPage, prepared));
   }
 
   async press(opts: { buttonId?: string; command?: string | object; rid?: string }) {
+    if (opts.buttonId && opts.command) throw new Error('Give either buttonId or command, not both.');
     if (opts.buttonId) ElsterEngine.assertAllowed(opts.buttonId);
     const command = opts.command ? ElsterEngine.assertCommand(opts.command) : null;
     if (!opts.buttonId && !command) throw new Error('Give either buttonId or command.');

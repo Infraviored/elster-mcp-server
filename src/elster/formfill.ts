@@ -313,7 +313,7 @@ export class ElsterFormFill extends ElsterBase {
             // Live ids embed the Kennzahl; repeat groups differ only in the
             // (n) path indices, so take them in document order.
             const hits = Array.from(
-              document.querySelectorAll(`input[id*="${f.kennzahl}"], select[id*="${f.kennzahl}"], textarea[id*="${f.kennzahl}"]`),
+              document.querySelectorAll(`input[id*="${CSS.escape(f.kennzahl)}"], select[id*="${CSS.escape(f.kennzahl)}"], textarea[id*="${CSS.escape(f.kennzahl)}"]`),
             ) as HTMLInputElement[];
             const el = hits[f.occurrence];
             if (!el) continue;
