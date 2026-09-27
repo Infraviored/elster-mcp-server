@@ -1,5 +1,10 @@
 # elster-mcp-server
 
+> Originally forked from [lukasschwarz/elster-mcp-server](https://github.com/lukasschwarz/elster-mcp-server)
+> (MIT). This version replaces its click automation with an HTTP form engine that drives any
+> ELSTER form by Kennzahl, reads back the exact data that would be transmitted, and by design
+> **never submits** — the taxpayer clicks "Absenden". See `CLAUDE.md` for the architecture.
+
 A **Model Context Protocol (MCP) server** that lets Claude (or any MCP-capable client)
 drive the German tax portal [ELSTER](https://www.elster.de) via Puppeteer.
 
@@ -69,7 +74,7 @@ drive the German tax portal [ELSTER](https://www.elster.de) via Puppeteer.
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/elster-mcp-server.git
+git clone https://github.com/Infraviored/elster-mcp-server.git
 cd elster-mcp-server
 npm install
 npm run build

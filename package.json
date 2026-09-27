@@ -2,15 +2,18 @@
   "name": "elster-mcp-server",
   "version": "0.1.0",
   "description": "Model Context Protocol (MCP) server for ELSTER (German tax portal) automation via Puppeteer. Submit UStVA, prepare EUER/ESt, sync inbox and history.",
-  "mcpName": "io.github.lukasschwarz/elster-mcp-server",
+  "mcpName": "io.github.Infraviored/elster-mcp-server",
   "type": "module",
-  "homepage": "https://github.com/lukasschwarz/elster-mcp-server",
-  "bugs": "https://github.com/lukasschwarz/elster-mcp-server/issues",
+  "homepage": "https://github.com/Infraviored/elster-mcp-server",
+  "bugs": "https://github.com/Infraviored/elster-mcp-server/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lukasschwarz/elster-mcp-server.git"
+    "url": "git+https://github.com/Infraviored/elster-mcp-server.git"
   },
-  "author": "Lukas Schwarz <mail@lukasschwarz.info>",
+  "author": "Florian Schneider",
+  "contributors": [
+    "Lukas Schwarz <mail@lukasschwarz.info> (original click-based version)"
+  ],
   "main": "dist/index.js",
   "bin": {
     "elster-mcp-server": "dist/index.js"

@@ -1,10 +1,10 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.lukasschwarz/elster-mcp-server",
+  "name": "io.github.Infraviored/elster-mcp-server",
   "description": "Drive the German tax portal ELSTER via Puppeteer: submit UStVA, prepare EUER/ESt, sync inbox.",
   "version": "0.1.0",
   "repository": {
-    "url": "https://github.com/lukasschwarz/elster-mcp-server",
+    "url": "https://github.com/Infraviored/elster-mcp-server",
     "source": "github"
   },
   "packages": [
