@@ -4,6 +4,7 @@ import { log } from '../logger.js';
 import { loadConfig } from '../config.js';
 import { sessionManager, InternalSession } from '../session-manager.js';
 import { PORTAL_URLS } from './constants.js';
+import { TakeoverChoice, NO_TAKEOVER } from './datenuebernahme.js';
 
 /**
  * ESt 1 A (Einkommensteuererklärung) — opens the form, fills basic taxpayer
@@ -20,11 +21,15 @@ import { PORTAL_URLS } from './constants.js';
  */
 export class ElsterEst extends ElsterBase {
 
-  startSession(data: Record<string, number | string>, year: number): string {
+  startSession(
+    data: Record<string, number | string>,
+    year: number,
+    takeover: TakeoverChoice = NO_TAKEOVER,
+  ): string {
     const session = sessionManager.create('EST');
     const logMsg = (msg: string) => { session.progress.push(msg); log.info(`[ESt] ${msg}`); };
 
-    this.run(session, data, year, logMsg).catch((err: Error) => {
+    this.run(session, data, year, takeover, logMsg).catch((err: Error) => {
       session.status = 'ERROR';
       session.errors = [...(session.errors || []), err.message];
     });
@@ -36,6 +41,9 @@ export class ElsterEst extends ElsterBase {
     const s = sessionManager.get(sessionId);
     if (!s) return;
     s.status = 'CANCELLED';
+    // Releases the AWAITING_REVIEW wait so the run's finally-block closes the
+    // browser now instead of holding it for the rest of the 30-minute window.
+    s._doneResolve?.();
     sessionManager.delete(sessionId);
   }
 
@@ -43,6 +51,7 @@ export class ElsterEst extends ElsterBase {
     session: InternalSession,
     data: Record<string, number | string>,
     year: number,
+    takeover: TakeoverChoice,
     logMsg: (m: string) => void,
   ): Promise<void> {
     session.status = 'LOGGING_IN';
@@ -56,7 +65,7 @@ export class ElsterEst extends ElsterBase {
       await this.handleModals(page);
 
       session.status = 'OPENING_FORM';
-      await this.openEstForm(page, year);
+      await this.openEstForm(page, year, takeover, logMsg);
 
       session.status = 'FILLING_PAGES';
       await this.walkAndFill(page, data, logMsg);
@@ -96,34 +105,18 @@ export class ElsterEst extends ElsterBase {
     }
   }
 
-  private async openEstForm(page: Page, year: number): Promise<void> {
+  private async openEstForm(
+    page: Page,
+    year: number,
+    takeover: TakeoverChoice,
+    logMsg: (m: string) => void,
+  ): Promise<void> {
     await page.goto(PORTAL_URLS.estForm, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 2000));
 
-    try {
-      await page.waitForSelector('#zeitraumJahr', { timeout: 15000 });
-      await page.select('#zeitraumJahr', `${year}-v1`);
-    } catch {
-      const ok = await page.evaluate((y) => {
-        const selects = Array.from(document.querySelectorAll('select'));
-        for (const sel of selects) {
-          const opt = Array.from(sel.options).find(o => o.value.includes(String(y)));
-          if (opt) { sel.value = opt.value; sel.dispatchEvent(new Event('change', { bubbles: true })); return true; }
-        }
-        return false;
-      }, year);
-      if (!ok) log.warn('[ESt] Year selector not found.');
-    }
-
-    const startBtn = await page.$('#Enter');
-    if (startBtn) {
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
-        startBtn.click(),
-      ]);
-    }
-    await new Promise(r => setTimeout(r, 3000));
+    await this.selectFormYear(page, year);
     await this.handleModals(page);
+    await this.handleDatenuebernahme(page, takeover, logMsg);
   }
 
   private async walkAndFill(page: Page, data: Record<string, number | string>, logMsg: (m: string) => void): Promise<void> {

@@ -42,13 +42,22 @@ drive the German tax portal [ELSTER](https://www.elster.de) via Puppeteer.
 | `elster_kennziffern_list` | Returns the supported UStVA Kennziffern with descriptions | No |
 | `elster_ustva_generate_xml` | Generates a UStVA XML snapshot (archive only) | No |
 | `elster_ustva_detect_reverse_charge` | Detects §13b reverse-charge suppliers | No |
+| `elster_datenuebernahme_list` | Lists earlier submissions ELSTER offers to carry over into a new form | No |
 | `elster_ustva_start` | Logs in, fills, runs Prüfung, then **pauses for confirmation** | Pauses |
 | `elster_ustva_confirm` | Clicks "Absenden" after you reviewed | **Yes** |
 | `elster_eur_start` | Fills Anlage EÜR up to Prüfung, then "Speichern und Verlassen" | No |
 | `elster_est_start` | Opens ESt 1 A, fills basics, runs Prüfung, keeps browser open 30 min | No |
+| `elster_submissions_list` | Lists submitted forms with their nachrichtId / aufgabeId | No |
+| `elster_submission_protocol` | Reads the full field-level content of past submissions | No |
 | `elster_sync_history` | Reads "Übermittelte Formulare" (optionally with PDFs) | No |
 | `elster_sync_inbox` | Reads ELSTER inbox (optionally with PDFs) | No |
 | `elster_session_status` / `_list` / `_cancel` | Session management | No |
+| `elster_drafts_list` | Lists saved drafts with their aufgabeId | No |
+| `elster_form_new` / `elster_form_open` | Starts a new form (any type) or opens a draft in a persistent session | No |
+| `elster_form_page` / `elster_form_crawl` | Reads a page / walks a whole form: fields by Kennzahl, repeat groups, navigation | No |
+| `elster_form_set` / `_add_row` / `_delete_row` | Fills fields and table rows by Kennzahl | No |
+| `elster_form_press` | Escape hatch for other form commands (send/delete refused) | No |
+| `elster_form_check` / `elster_form_save` | Runs "Prüfen" (incl. provisional tax result) / saves the draft | No |
 
 ## Requirements
 
@@ -160,6 +169,68 @@ Then connect via your client's MCP transport.
 3. elster_session_status (poll until SAVED or AWAITING_REVIEW)
 4. open the ELSTER portal in your browser → "Meine Formulare" → review the draft → submit manually
 ```
+
+## Datenübernahme (Vorjahresdaten übernehmen)
+
+ELSTER can copy an earlier submission of the same form into a new one — the
+"Datenübernahme" step it offers right after you pick the tax year. The three
+`*_start` tools expose it through an optional `takeover` argument:
+
+| `takeover` | Effect |
+|---|---|
+| omitted / `"none"` | Start from a blank form (default) |
+| `"latest"` | Carry over the most recently sent submission |
+| `2024` | Carry over that tax year's submission |
+| `"537842781"` | Carry over that exact `aufgabeId` |
+
+Check what is on offer first — this never fills or submits anything:
+
+```text
+elster_datenuebernahme_list({ form: "est", year: 2025 })
+→ {
+    "candidates": [
+      { "aufgabeId": "537842781",
+        "description": "ESt unbeschränkt (ESt 1 A) 2024, …",
+        "sentAt": "31.07.2025 23:32 Uhr", "year": 2024 },
+      …
+    ]
+  }
+
+elster_est_start({ year: 2025, data: {}, takeover: 2024 })
+```
+
+If the requested submission is not on offer the call fails instead of quietly
+starting a blank form — carrying nothing over when you asked for last year's
+data would produce a wrong return. An empty candidate list is normal: ELSTER
+only offers a takeover once a matching form has actually been submitted.
+
+## Past submissions as context
+
+`elster_submission_protocol` reads the "Übertragungsprotokoll" of returns you have
+already filed — every field that was actually transmitted, with its Zeile number,
+label, value and ELSTER field id, grouped by form and section:
+
+```text
+elster_submissions_list({ formFilter: "ESt unbeschränkt" })
+→ [{ nachrichtId: { type: "a", id: 178614775 }, year: 2024,
+     ordnungskriterium: "…", aufgabeId: "537842781", abgabeXmlId: 51359059 }, …]
+
+elster_submission_protocol({ formFilter: "ESt unbeschränkt", years: [2024] })
+→ { title: "Übertragungsprotokoll …",
+    meta: { Finanzamt, Transferticket, "Eingang auf Server", … },
+    sections: [ { form: "Anlage N (…)",
+                  heading: ["Werbungskosten", "Aufwendungen für Arbeitsmittel"],
+                  rows: [ { zeile: "5", label: "…", value: "…",
+                            fieldId: "id-N-ArbL-…-E0200204_usb1_1-1-1-1" } ] } ] }
+```
+
+The `fieldId` is ELSTER's own identifier, which is exactly what `elster_est_start`'s
+`data` keys are matched against — so last year's protocol can be read, adjusted and
+fed back into this year's form.
+
+Note that this returns real personal tax data (identification number, bank details,
+income). It is read-only and never leaves your machine, but treat the output like the
+tax return it is.
 
 ## Security notes
 

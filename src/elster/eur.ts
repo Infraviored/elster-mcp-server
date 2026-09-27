@@ -4,6 +4,7 @@ import { log } from '../logger.js';
 import { loadConfig } from '../config.js';
 import { sessionManager, InternalSession } from '../session-manager.js';
 import { PORTAL_URLS, EUR_FIELD_MAP } from './constants.js';
+import { TakeoverChoice, NO_TAKEOVER } from './datenuebernahme.js';
 
 /**
  * Anlage EÜR (Einnahmen-Überschuss-Rechnung) — Puppeteer automation.
@@ -11,11 +12,11 @@ import { PORTAL_URLS, EUR_FIELD_MAP } from './constants.js';
  */
 export class ElsterEur extends ElsterBase {
 
-  startSession(data: Record<string, number>, year: number): string {
+  startSession(data: Record<string, number>, year: number, takeover: TakeoverChoice = NO_TAKEOVER): string {
     const session = sessionManager.create('EUR');
     const logMsg = (msg: string) => { session.progress.push(msg); log.info(`[EUR] ${msg}`); };
 
-    this.run(session, data, year, logMsg).catch((err: Error) => {
+    this.run(session, data, year, takeover, logMsg).catch((err: Error) => {
       session.status = 'ERROR';
       session.errors = [...(session.errors || []), err.message];
     });
@@ -27,6 +28,8 @@ export class ElsterEur extends ElsterBase {
     const s = sessionManager.get(sessionId);
     if (!s) return;
     s.status = 'CANCELLED';
+    // Releases the review wait so the run's finally-block closes the browser now.
+    s._doneResolve?.();
     sessionManager.delete(sessionId);
   }
 
@@ -34,6 +37,7 @@ export class ElsterEur extends ElsterBase {
     session: InternalSession,
     data: Record<string, number>,
     year: number,
+    takeover: TakeoverChoice,
     logMsg: (m: string) => void,
   ): Promise<void> {
     session.status = 'LOGGING_IN';
@@ -47,7 +51,7 @@ export class ElsterEur extends ElsterBase {
       await this.dismissPostLoginModals(page);
 
       session.status = 'OPENING_FORM';
-      await this.openEurForm(page, year);
+      await this.openEurForm(page, year, takeover, logMsg);
 
       session.status = 'FILLING_PAGES';
       await this.walkAndFillPages(page, data, logMsg);
@@ -105,7 +109,12 @@ export class ElsterEur extends ElsterBase {
     }
   }
 
-  private async openEurForm(page: Page, year: number): Promise<void> {
+  private async openEurForm(
+    page: Page,
+    year: number,
+    takeover: TakeoverChoice,
+    logMsg: (m: string) => void,
+  ): Promise<void> {
     await page.goto(PORTAL_URLS.eurForm, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 2000));
     await this.dismissPostLoginModals(page);
@@ -138,17 +147,7 @@ export class ElsterEur extends ElsterBase {
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
     await new Promise(r => setTimeout(r, 2000));
 
-    await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('button, a, input[type="button"]'));
-      const btn = btns.find(b => {
-        const txt = b.textContent?.trim() || (b as HTMLInputElement).value || '';
-        return txt.includes('Ohne Datenübernahme');
-      });
-      if (btn) (btn as HTMLElement).click();
-    }).catch(() => {});
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 2000));
-    await this.handleModals(page);
+    await this.handleDatenuebernahme(page, takeover, logMsg);
   }
 
   private async walkAndFillPages(page: Page, data: Record<string, number>, logMsg: (m: string) => void): Promise<void> {
