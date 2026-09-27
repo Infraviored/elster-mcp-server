@@ -43,6 +43,24 @@ export class ElsterEngine extends ElsterBase {
     }
   }
 
+  /**
+   * Checks a reqCmd the same way the driver does: parsed and re-serialised,
+   * so JSON escapes cannot smuggle "SENDEN" past a text match. Returns the
+   * canonical text, which is what gets posted.
+   */
+  static assertCommand(command: string | object): string {
+    let obj: any = command;
+    if (typeof command === 'string') {
+      try { obj = JSON.parse(command); } catch { throw new Error('Refused: command is not valid JSON.'); }
+    }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || Object.keys(obj).length !== 1) {
+      throw new Error('Refused: a command must be a JSON object with exactly one command name.');
+    }
+    const text = JSON.stringify(obj);
+    ElsterEngine.assertAllowed(text);
+    return text;
+  }
+
   /** Runs `fn` after every earlier call has settled. */
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.queue.then(fn, fn);
@@ -210,12 +228,12 @@ export class ElsterEngine extends ElsterBase {
   }
 
   async press(opts: { buttonId?: string; command?: string | object; rid?: string }) {
-    const text = opts.buttonId ?? (typeof opts.command === 'string' ? opts.command : JSON.stringify(opts.command ?? ''));
-    ElsterEngine.assertAllowed(text);
+    if (opts.buttonId) ElsterEngine.assertAllowed(opts.buttonId);
+    const command = opts.command ? ElsterEngine.assertCommand(opts.command) : null;
+    if (!opts.buttonId && !command) throw new Error('Give either buttonId or command.');
     if (opts.rid) await this.call('jump', opts.rid);
     if (opts.buttonId) await this.call('press', opts.buttonId);
-    else if (opts.command) await this.call('post', opts.command);
-    else throw new Error('Give either buttonId or command.');
+    else await this.call('post', command);
     return this.summary();
   }
 

@@ -123,8 +123,9 @@ export class ElsterEdaten extends ElsterBase {
         fields,
         fieldCount: fields.length,
         review,
-        draftWarning:
-          'A draft was created under "Meine Formulare". Nothing was transmitted. Delete it if unwanted.',
+        draftWarning: opts.saveDraft
+          ? 'A draft was saved under "Meine Formulare". Nothing was transmitted. Delete it if unwanted.'
+          : 'No draft was saved; ELSTER may offer the unsaved form for recovery at the next login (decline it). Nothing was transmitted.',
       };
     } finally {
       await this.closeBrowser();

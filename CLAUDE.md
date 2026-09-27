@@ -152,9 +152,11 @@ Invariants — do not weaken:
 - **The tab is never navigated after login.** `form.submit()` / `location.href` from an
   evaluate left Chrome's renderer permanently hung twice; `fetch` never did. All page state
   lives in the parsed `EO.doc`.
-- **The engine cannot send.** `ElsterEngine.assertAllowed` and the driver's `guard` both
+- **The engine cannot send.** `ElsterEngine.assertCommand` and the driver's `guard` both
   refuse `target:"SENDEN"`, `Absenden`, `Senden`, `Übermittl…`, `DeleteEntwurfAufgabe`,
-  `Logout`. Checks stop at `SwitchModus{target:"PRUEFEN"}`.
+  `Logout`. Commands are **parsed and re-serialised before matching** (so `\u0053ENDEN`
+  escapes are decoded) and must have exactly one command name; the canonical text is
+  what gets posted. Checks stop at `SwitchModus{target:"PRUEFEN"}`.
 - **One narrow exception, approved by the user on 27.09.2026:** `elster_form_review` enters
   the "Formular absenden" overview with the exact string
   `{"SwitchModus":{…"target":"SENDEN"…}}` (what a human's "Weiter" posts after a clean
@@ -179,7 +181,10 @@ Portal facts learned the hard way:
 - Drafts: `/eportal/meineformulare`, buttons `oeffneEntwurf_<aufgabeId>` →
   `OeffneAufgabeCommand{aufgabeId}`.
 
-Testing: there is still no test suite. `tools/mcp-call.mjs '[["tool",{args}],…]'` calls the
+Testing: `node tools/engine-selftest.mjs` (after `npm run build`) checks the safety guards
+offline in a headless Chrome — escaped/compound send commands, the /versenden/ lock,
+amount parsing, ambiguous takeovers. No ELSTER login needed; run it after touching the
+guards. Beyond that there is no test suite. `tools/mcp-call.mjs '[["tool",{args}],…]'` calls the
 built server over stdio exactly like an MCP client (needs the `ELSTER_*` env, e.g. from
 `~/.elster/run-mcp.sh` minus its `exec` line); `MCP_CALL_FULL=1` disables output truncation.
 

@@ -39,15 +39,30 @@ export interface BelegUploadInput {
   idNr?: string;
 }
 
-/** Leaf-field values: "12,99" → 12.99 for amount-like keys. */
+/**
+ * Amount strings → numbers for amount-like keys.
+ *   "1.234,56" / "12,99"  German: dots group thousands, comma is decimal
+ *   "12.99"               a single dot with 1–2 digits after it is decimal
+ *   "1.234"               ambiguous (German 1234 or English 1.234) → refused
+ * Getting this wrong stores a receipt 100× too large, so guessing is not an option.
+ */
+export function parseAmount(raw: string): number {
+  const v = raw.trim().replace(/\s|€/g, '');
+  if (/^-?\d{1,3}(\.\d{3})*,\d+$/.test(v) || /^-?\d+,\d+$/.test(v)) {
+    return Number(v.replace(/\./g, '').replace(',', '.'));
+  }
+  if (/^-?\d+\.\d{1,2}$/.test(v)) return Number(v);
+  if (/^-?\d+$/.test(v)) return Number(v);
+  if (/^-?\d{1,3}(\.\d{3})+$/.test(v)) {
+    throw new Error(`ambiguous amount "${raw}" — write "${v.replace(/\./g, '')}" or use a comma for decimals`);
+  }
+  throw new Error(`not an amount: "${raw}"`);
+}
+
 function normalizeFields(fields: Record<string, string | number>): Record<string, string | number> {
   const out: Record<string, string | number> = {};
   for (const [k, v] of Object.entries(fields)) {
-    if (typeof v === 'string' && /betrag/i.test(k) && /^-?[\d.]+(,\d+)?$/.test(v.trim())) {
-      out[k] = Number(v.trim().replace(/\./g, '').replace(',', '.'));
-    } else {
-      out[k] = v;
-    }
+    out[k] = typeof v === 'string' && /betrag/i.test(k) ? parseAmount(v) : v;
   }
   return out;
 }

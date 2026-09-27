@@ -20,7 +20,7 @@
  */
 export function installDriver(): string {
   const w = window as any;
-  if (w.EO && w.EO.version === 7) return 'already installed';
+  if (w.EO && w.EO.version === 8) return 'already installed';
 
   // Commands that transmit, delete or otherwise leave the "fill and check"
   // envelope. Refused here as a second line of defence behind the Node side.
@@ -40,11 +40,31 @@ export function installDriver(): string {
   // closure — not on window.EO, so nothing callable from outside can set it.
   const REVIEW_CMD = '{"SwitchModus":{"ignoreSkippableErrors":false,"target":"SENDEN","force":false}}';
   let reviewing = false;
-  const guard = (cmd: string) => {
-    if (reviewing && cmd === REVIEW_CMD) return;
+
+  /** Plain strings (button ids, labels): pattern check only. */
+  const guardText = (s: string) => {
     for (const re of FORBIDDEN) {
-      if (re.test(cmd)) throw new Error(`refused command (send/delete/logout): ${cmd.slice(0, 160)}`);
+      if (re.test(s)) throw new Error(`refused (send/delete/logout): ${s.slice(0, 160)}`);
     }
+  };
+
+  /**
+   * reqCmd JSON: parse and re-serialise before checking, so escapes like
+   * "\u0053ENDEN" are decoded to what ELSTER will read, and return that
+   * canonical text — it is what gets posted, so the checked command and the
+   * sent command are the same bytes. A command is one JSON object with
+   * exactly one command name; anything else is refused.
+   */
+  const guard = (cmd: string): { text: string; name: string; body: any } => {
+    let obj: any;
+    try { obj = JSON.parse(cmd); } catch { throw new Error(`refused: command is not JSON: ${cmd.slice(0, 80)}`); }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || Object.keys(obj).length !== 1) {
+      throw new Error('refused: a command must be a JSON object with exactly one command name');
+    }
+    const text = JSON.stringify(obj);
+    const name = Object.keys(obj)[0];
+    if (!(reviewing && text === REVIEW_CMD)) guardText(text);
+    return { text, name, body: obj[name] };
   };
 
   const clean = (s: string | null | undefined) => (s || '').replace(/\s+/g, ' ').trim();
@@ -61,7 +81,7 @@ export function installDriver(): string {
   };
 
   const EO: any = {
-    version: 7,
+    version: 8,
     doc: document as Document,
     url: location.href,
 
@@ -85,6 +105,7 @@ export function installDriver(): string {
     },
 
     async load(url: string) {
+      this.lastRid = null;
       const r = await fetch(url, { credentials: 'include', redirect: 'follow' });
       this._parse(await r.text(), r.url);
       return { status: r.status, url: r.url, title: this.title() };
@@ -92,11 +113,12 @@ export function installDriver(): string {
 
     /** Posts #form of the current page with a command and field overrides. */
     async post(reqCmd: any, overrides: Record<string, string | null> = {}, appends: [string, string][] = []) {
-      const cmd = typeof reqCmd === 'string' ? reqCmd : JSON.stringify(reqCmd);
-      guard(cmd);
+      const checked = guard(typeof reqCmd === 'string' ? reqCmd : JSON.stringify(reqCmd));
+      const cmd = checked.text;
       // On the sending page the only way anywhere is back to editing/checking.
-      if (/\/versenden\//.test(this.url) && !/"target":"(EINGABE|PRUEFEN)"/.test(cmd)) {
-        throw new Error(`refused: only EINGABE/PRUEFEN allowed on the sending page, got ${cmd.slice(0, 120)}`);
+      if (/\/versenden\//.test(this.url)
+          && !(checked.name === 'SwitchModus' && ['EINGABE', 'PRUEFEN'].includes(checked.body?.target))) {
+        throw new Error(`refused: only SwitchModus EINGABE/PRUEFEN allowed on the sending page, got ${cmd.slice(0, 120)}`);
       }
       const f = this.form();
       if (!f) throw new Error(`current page has no #form (${this.url})`);
@@ -124,9 +146,10 @@ export function installDriver(): string {
       }
       const b = this.doc.getElementById(buttonId) as HTMLButtonElement | null;
       if (!b) throw new Error(`no button #${buttonId} on ${this.url}`);
-      if (/absenden|senden/i.test(b.textContent || '')) guard('Absenden');
-      if (b.value) guard(b.value);
-      guard(buttonId);
+      if (/absenden|senden/i.test(b.textContent || '')) guardText('Absenden');
+      guardText(buttonId);
+      // reqCmd buttons carry JSON commands; screen them like post() does.
+      const value = b.name === 'reqCmd' && b.value ? guard(b.value).text : b.value;
       const f = (b.form || b.closest('form')) as HTMLFormElement | null;
       if (!f) throw new Error(`button #${buttonId} has no form`);
       const body = serialize(f);
@@ -134,7 +157,8 @@ export function installDriver(): string {
         if (v === null) body.delete(k); else body.set(k, String(v));
       }
       for (const [k, v] of appends) body.append(k, v);
-      if (b.name) body.set(b.name, b.value);
+      if (b.name) body.set(b.name, value);
+      this.lastRid = null;
       const action = new URL(f.getAttribute('action') || this.url, this.url).href;
       const method = (f.getAttribute('method') || 'post').toUpperCase();
       const r = method === 'GET'
@@ -334,9 +358,11 @@ export function installDriver(): string {
       const ov = this.overridesFor(values, 'fields[');
       this.lastSetNames = Object.keys(ov);
       // Saving = posting the page back; re-jumping to the same page keeps us here.
-      const r = self ? await this.post(this.jumpCmd(self), ov)
-        : await this.post({ NextPage: { ignoreSkippableErrors: true } }, ov);
-      return r;
+      // Saving means posting the page back to itself. Without knowing which
+      // page this is, any other command would move away (NextPage did) and the
+      // read-back would describe the wrong page — so refuse instead.
+      if (!self) throw new Error('current page RID unknown — pass rid to elster_form_set');
+      return this.post(this.jumpCmd(self), ov);
     },
 
     async addRow(group: string, values: Record<string, any>) {

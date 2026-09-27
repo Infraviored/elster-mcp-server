@@ -262,7 +262,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'elster_edaten_fetch',
-    description: 'Retrieves the pre-filled tax data ("vorausgefüllte Steuererklärung" / eDaten) the tax authority already holds for a year: Lohnsteuerbescheinigung, Vorsorgeaufwendungen, Lohnersatzleistungen, Riester/Rürup. ELSTER only exposes these from inside the ESt form, so this walks the form up to the import step and reads the values back. NOTE: reaching the import necessarily creates a draft under "Meine Formulare". Nothing is ever transmitted.',
+    description: 'Retrieves the pre-filled tax data ("vorausgefüllte Steuererklärung" / eDaten) the tax authority already holds for a year: Lohnsteuerbescheinigung, Vorsorgeaufwendungen, Lohnersatzleistungen, Riester/Rürup. ELSTER only exposes these from inside the ESt form, so this walks the form up to the import step and reads the values back. The form is left without saving, so no draft is kept (ELSTER may offer it for recovery at the next login). Nothing is ever transmitted.',
     inputSchema: {
       type: 'object',
       properties: {

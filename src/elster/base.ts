@@ -79,7 +79,8 @@ export class ElsterBase {
     await page.goto(PORTAL_URLS.start, { waitUntil: 'networkidle2', timeout: 60000 });
 
     const currentUrl = page.url();
-    if (currentUrl.includes('mein-elster/startseite') || currentUrl.includes('eportal/mein-elster')) {
+    if (currentUrl.includes('mein-elster/startseite') || currentUrl.includes('eportal/mein-elster')
+        || currentUrl.includes('eportal/meinelster')) {
       log.info('Already logged in.');
       return true;
     }

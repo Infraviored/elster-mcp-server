@@ -440,3 +440,18 @@ Steuerpflichtigen unter die Versicherung „wahrheitsgemäß nach bestem Wissen"
 füllt, prüft und zeigt die Übersicht (`elster_form_review`); den Klick macht der Mensch.
 Die Guards sperren SENDEN weiterhin; `/eportal/sign/` und `/eportal/rpc` werden von der
 Engine nie angesprochen.
+
+## Code-Review 27.09.2026 — alle 7 Befunde behoben
+
+1. Sende-Sperre per JSON-Escape umgehbar (`\u0053ENDEN`) und auf /versenden/ durch ein
+   zweites `"target":"EINGABE"` im selben Befehl → Befehle werden geparst, kanonisch
+   serialisiert, genau ein Befehlsname; auf /versenden/ nur `SwitchModus` EINGABE/PRUEFEN.
+2. `Betrag "12.99"` wurde 1299 → `parseAmount`: deutsch, englisch mit 1–2 Nachkommastellen,
+   mehrdeutiges „1.234" wird abgelehnt.
+3. `takeover=<Jahr>` nahm bei mehreren Abgaben die erste → Fehler mit Liste der aufgabeIds.
+4. `press()`/`load()` vergaßen die gemerkte RID nicht → stale RID nach Formularwechsel.
+5. `setFields` ohne RID speicherte per NextPage und las die falsche Seite → verweigert jetzt.
+6. „Schon eingeloggt" kannte `/eportal/meinelster` nicht.
+7. `elster_edaten_fetch` meldete fälschlich einen angelegten Entwurf.
+
+Abgesichert durch `tools/engine-selftest.mjs` (offline, 23 Prüfungen).

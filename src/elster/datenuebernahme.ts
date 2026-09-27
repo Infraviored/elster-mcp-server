@@ -174,13 +174,21 @@ export function pickCandidate(
       return dated.reduce((a, b) => (b.sentAtTs! > a.sentAtTs! ? b : a));
     }
     case 'year': {
-      const hit = candidates.find(c => c.year === choice.year);
-      if (!hit) {
+      const hits = candidates.filter(c => c.year === choice.year);
+      if (hits.length === 0) {
         throw new Error(
           `takeover=${choice.year} requested but no earlier submission for that year is offered. Available: ${describe()}.`,
         );
       }
-      return hit;
+      // Several per year is normal (UStVA months/quarters, ESt original plus
+      // correction). Picking one would carry over the wrong period's values.
+      if (hits.length > 1) {
+        throw new Error(
+          `takeover=${choice.year} is ambiguous: ${hits.length} submissions for that year. `
+          + `Pass the aufgabeId instead: ${hits.map(c => `${c.aufgabeId} (${c.description})`).join('; ')}.`,
+        );
+      }
+      return hits[0];
     }
     case 'aufgabeId': {
       const hit = candidates.find(c => c.aufgabeId === choice.aufgabeId);
