@@ -556,7 +556,9 @@ export function installDriver(): string {
       await this.load(`/eportal/formulare-leistungen/alleformulare/${slug}`);
       const sel = this.doc.getElementById('zeitraumJahr') as HTMLSelectElement | null;
       if (!sel) throw new Error(`form "${slug}" has no year selection (${this.title()})`);
-      const opt = Array.from(sel.options).find(o => o.value.startsWith(`${year}-`));
+      // "<year>-v1" / "<year>-v_<year>" usually; some forms use the bare year.
+      const opt = Array.from(sel.options).find(o => o.value.startsWith(`${year}-`))
+        ?? Array.from(sel.options).find(o => o.value === String(year));
       if (!opt) throw new Error(`year ${year} not offered for ${slug}: ${Array.from(sel.options).map(o => o.value).join(', ')}`);
       await this.press('Enter', { [sel.name]: opt.value });
       steps.push(this.url);
@@ -582,10 +584,22 @@ export function installDriver(): string {
             await this.press('Continue');
           }
         } else if (/autovast/.test(this.url)) {
-          if (!importEdaten) break;
-          const fin = this.doc.getElementById('Finish') ? 'Finish' : null;
-          if (!fin) break;
-          await this.press(fin);
+          if (importEdaten) {
+            if (!this.doc.getElementById('Finish')) break;
+            await this.press('Finish');
+          } else {
+            // Skipping the import: take the page's own way on without it, if it
+            // offers one on the allowlist; otherwise say so instead of leaving
+            // the caller stranded on the wizard.
+            const skip = (Array.from(this.doc.querySelectorAll('button[name="reqCmd"]')) as HTMLButtonElement[])
+              .find(b => /ohne|überspringen|nicht übernehmen|weiter/i.test(clean(b.textContent))
+                && /"(Continue|Cancel)"/.test(b.value));
+            if (!skip) {
+              throw new Error('eDaten import page reached and it offers no way to skip it; '
+                + 'call elster_form_new with importEdaten:true, or continue via elster_form_page/press');
+            }
+            await this.press(skip.id);
+          }
         } else {
           break;
         }

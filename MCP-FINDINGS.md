@@ -481,3 +481,14 @@ Senden/Löschen/Support laut Reviewer dicht. Gefunden und behoben:
 - `parseEoprint` auf Live-Seiten: `<h1>` vor `.modal__title` (alter B1).
 - GET-Formulare: Query per `URL.searchParams` zusammenführen.
 Selftest läuft jetzt unter dem echten Origin (Request-Interception, kein Netz): 51 Prüfungen.
+
+## Conductor-Review Runde 3 — umgesetzt, Reviews abgeschlossen
+
+Sicherheits-Invariante (kein Senden/Löschen/Logout/Support) über alle Tools bestätigt,
+keine neuen Sicherheitsbefunde. Drei funktionale Bugs behoben:
+- `elster_form_set` sprang nach dem Speichern erneut auf die Seite und verwarf damit ELSTERs
+  Validierungsfehler (meldete `errors: []` bei abgelehntem Wert). Live verifiziert.
+- `elster_form_new` mit `importEdaten:false` blieb auf der eDaten-Seite stehen → nutzt einen
+  „ohne Übernahme"-Knopf der Seite (Continue/Cancel) oder meldet klar, dass es keinen gibt.
+- Jahresauswahl: Fallback auf Optionswert == Jahr.
+Befundzahl je Runde: 10 → 4 → 3 (davon 0 Sicherheit). Weitere Runden lohnen kaum.

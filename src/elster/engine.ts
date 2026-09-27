@@ -210,9 +210,11 @@ export class ElsterEngine extends ElsterBase {
 
   async set(rid: string | undefined, values: Record<string, unknown>) {
     if (rid) await this.call('jump', rid);
+    // setFields posts the page back to itself; the response already is that
+    // page, with ELSTER's validation messages. Jumping again would reload it
+    // clean and swallow the errors.
     await this.call('setFields', values);
     const names = await this.call<string[]>('getLastSetNames');
-    if (rid) await this.call('jump', rid);
     // Compact on purpose: echoing the whole page cost ~8k tokens per call.
     const [set, errors, title, rid2] = await Promise.all([
       this.call<any[]>('valuesOf', names), this.call<string[]>('errors'),
