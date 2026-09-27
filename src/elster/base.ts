@@ -4,6 +4,16 @@ import path from 'path';
 import { loadConfig } from '../config.js';
 import { log } from '../logger.js';
 import { PORTAL_URLS } from './constants.js';
+import {
+  TakeoverChoice,
+  TakeoverCandidate,
+  isDatenuebernahmePage,
+  listTakeoverCandidates,
+  pickCandidate,
+  clickTakeover,
+  continueWithoutTakeover,
+  formatCandidates,
+} from './datenuebernahme.js';
 
 export class ElsterBase {
   protected browser: Browser | null = null;
@@ -69,7 +79,8 @@ export class ElsterBase {
     await page.goto(PORTAL_URLS.start, { waitUntil: 'networkidle2', timeout: 60000 });
 
     const currentUrl = page.url();
-    if (currentUrl.includes('mein-elster/startseite') || currentUrl.includes('eportal/mein-elster')) {
+    if (currentUrl.includes('mein-elster/startseite') || currentUrl.includes('eportal/mein-elster')
+        || currentUrl.includes('eportal/meinelster')) {
       log.info('Already logged in.');
       return true;
     }
@@ -105,18 +116,45 @@ export class ElsterBase {
     await uploadInput.uploadFile(cfg.auth.pfxPath);
     log.info('Certificate selected.');
 
-    await new Promise(r => setTimeout(r, 1000));
-    const passSelector = 'input[id*="passwort"], input[type="password"]';
+    // Selecting the certificate makes ELSTER re-render the login box, which
+    // wipes anything already typed into the password field. So wait for the
+    // re-render, then type — and verify the value actually stuck, because a
+    // silently emptied field only surfaces as "Passwort enthält weniger als
+    // 6 Zeichen" after the submit.
+    await new Promise(r => setTimeout(r, 3000));
+    const passSelector = '#password, input[type="password"], input[id*="passwort"]';
     await page.waitForSelector(passSelector, { timeout: 10000 });
-    await page.type(passSelector, cfg.auth.password, { delay: 50 });
+
+    let typed = 0;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await page.evaluate((sel: string) => {
+        const el = document.querySelector(sel) as HTMLInputElement | null;
+        if (el) { el.value = ''; el.focus(); }
+      }, passSelector);
+      await page.type(passSelector, cfg.auth.password, { delay: 30 });
+      typed = await page.evaluate(
+        (sel: string) => (document.querySelector(sel) as HTMLInputElement | null)?.value.length ?? 0,
+        passSelector);
+      if (typed === cfg.auth.password.length) break;
+      log.warn(`Password field held ${typed} of ${cfg.auth.password.length} characters, retrying (${attempt}/3).`);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    if (typed !== cfg.auth.password.length) {
+      throw new Error('Password field would not accept the full password.');
+    }
 
     log.info('Submitting login...');
-    const submitSelector = 'button[type="submit"], #loginZertifikat-login, button.btn-primary';
+    // Never select by `button[type=submit]` alone: ELSTER renders the header's
+    // chat, search and contrast icons as submit buttons too, so the first match
+    // in document order is #chatLinkHeader — clicking it reloads the page and
+    // silently discards the uploaded certificate.
+    const submitSelector = '#bestaetigenButton, #loginZertifikat-login';
     let loginBtn = await page.$(submitSelector);
     if (!loginBtn) {
       const handle = await page.evaluateHandle(() => {
         const btns = Array.from(document.querySelectorAll('button'));
-        return btns.find(b => b.textContent?.includes('Login')) || null;
+        return btns.find(b => (b.textContent || '').trim() === 'Login'
+          && (b as HTMLElement).offsetParent !== null) || null;
       });
       loginBtn = handle.asElement() as any;
     }
@@ -128,8 +166,19 @@ export class ElsterBase {
     ]);
 
     const finalUrl = page.url();
-    if (finalUrl.includes('mein-elster/startseite') || finalUrl.includes('eportal/mein-elster')) {
+    if (finalUrl.includes('mein-elster/startseite') || finalUrl.includes('eportal/mein-elster')
+        || finalUrl.includes('eportal/meinelster')) {
       log.info('Login successful.');
+      return true;
+    }
+    // After a session that ended without "Abmelden", ELSTER lands on an
+    // interstitial asking whether to keep the auto-saved form state. The login
+    // itself succeeded. Declining keeps the last explicitly saved draft as is.
+    if (finalUrl.includes('eportal/temporaereaufgaben')) {
+      log.info('Login successful; declining auto-saved form recovery.');
+      await page.evaluate(() =>
+        (document.getElementById('temporaereaufgaben_nein_button') as HTMLElement | null)?.click());
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
       return true;
     }
 
@@ -138,7 +187,81 @@ export class ElsterBase {
       return err ? err.textContent?.trim() : null;
     });
     if (errorText) throw new Error(`ELSTER login error: ${errorText}`);
-    return false;
+    // A silent `false` used to strand callers on the login page while they
+    // reported success, so state the failure with the page we ended up on.
+    throw new Error(`ELSTER login did not reach Mein ELSTER; still at ${finalUrl}`);
+  }
+
+  /**
+   * Selects a tax year on a form's entry page and clicks "Weiter" (#Enter).
+   *
+   * Option values are not uniformly `<year>-v1` — older ESt years use
+   * `<year>-v_<year>` — so match on the `<year>-` prefix instead of guessing.
+   */
+  protected async selectFormYear(page: Page, year: number): Promise<void> {
+    await page.waitForSelector('#zeitraumJahr', { timeout: 15000 });
+
+    const value = await page.evaluate((y) => {
+      const sel = document.querySelector('#zeitraumJahr') as HTMLSelectElement | null;
+      if (!sel) return null;
+      const opt = Array.from(sel.options).find(o => o.value.startsWith(`${y}-`))
+        ?? Array.from(sel.options).find(o => o.value.includes(String(y)));
+      return opt ? opt.value : null;
+    }, year);
+
+    if (!value) throw new Error(`Tax year ${year} is not offered on this form.`);
+    await page.select('#zeitraumJahr', value);
+
+    const enter = await page.$('#Enter');
+    if (!enter) throw new Error('Form start button (#Enter) not found.');
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+      enter.click(),
+    ]);
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  /**
+   * Handles the "Datenübernahme" interstitial that ELSTER shows after the year
+   * has been picked. Returns the candidate that was carried over, or null when
+   * the flow continued without a takeover (including when the page never
+   * appeared at all).
+   *
+   * Throws when `choice` names a submission ELSTER does not offer — see
+   * pickCandidate().
+   */
+  protected async handleDatenuebernahme(
+    page: Page,
+    choice: TakeoverChoice,
+    logMsg: (m: string) => void = log.info,
+  ): Promise<TakeoverCandidate | null> {
+    if (!await isDatenuebernahmePage(page)) return null;
+
+    const candidates = await listTakeoverCandidates(page);
+    logMsg(`Datenübernahme page: ${formatCandidates(candidates)}`);
+
+    // Throws on an unmet explicit request, before anything is clicked.
+    const picked = pickCandidate(candidates, choice);
+
+    if (picked) {
+      logMsg(`Taking over "${picked.description}" (aufgabeId ${picked.aufgabeId})...`);
+      if (!await clickTakeover(page, picked.aufgabeId)) {
+        throw new Error(`"Übernehmen" button for aufgabeId ${picked.aufgabeId} could not be clicked.`);
+      }
+    } else {
+      logMsg('Continuing without Datenübernahme.');
+      if (!await continueWithoutTakeover(page)) {
+        log.warn('"Ohne Datenübernahme fortfahren" button not found.');
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 3000));
+    await this.handleModals(page);
+
+    if (await isDatenuebernahmePage(page)) {
+      log.warn('Still on the Datenübernahme page after clicking — ELSTER may have rejected the choice.');
+    }
+    return picked;
   }
 
   /**
@@ -150,9 +273,32 @@ export class ElsterBase {
         const btns = Array.from(document.querySelectorAll('button, a, .btn'));
         const body = document.body.innerText;
 
+        // ELSTER logs out after ~30 min idle and warns first. Automated runs
+        // sit still between steps, so the warning fires on long flows and
+        // blocks everything underneath. Always extend rather than dismiss.
+        if (body.includes('Ihre Sitzung läuft ab') || body.includes('Automatisches Logout')) {
+          const extend = document.querySelector('#extendSessionButton') as HTMLElement | null;
+          if (extend && extend.offsetParent !== null) { extend.click(); return 'session extended'; }
+          const btn = btns.find(b => /Sitzung fortsetzen/i.test(b.textContent || '')
+            && (b as HTMLElement).offsetParent !== null);
+          if (btn) { (btn as HTMLElement).click(); return 'session extended'; }
+        }
+
         if (body.includes('Eingabefehler gefunden') || body.includes('In einem Feld ist ein Eingabefehler')) {
           const btn = btns.find(b => b.textContent?.trim().includes('Zum Fehler'));
           if (btn) { (btn as HTMLElement).click(); return 'input-error modal closed'; }
+        }
+
+        // Shown on the form's Startseite right after a Datenübernahme. It is a
+        // plain overlay with no outcome attached, but it swallows every click
+        // underneath, so the page walk stalls until it is dismissed.
+        if (body.includes('Das Formular ist jetzt vorausgefüllt')
+            || (body.includes('Willkommen!') && body.includes('früheren Abgabe'))) {
+          const btn = btns.find(b => {
+            const t = (b.textContent || '').trim();
+            return (t === 'Schließen' || t === 'Weiter') && (b as HTMLElement).offsetParent !== null;
+          });
+          if (btn) { (btn as HTMLElement).click(); return 'Datenübernahme welcome modal closed'; }
         }
 
         if (body.includes('Wiederaufnahme') || body.includes('wiederaufnehmen') ||

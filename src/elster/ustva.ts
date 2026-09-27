@@ -4,6 +4,7 @@ import { log } from '../logger.js';
 import { loadConfig } from '../config.js';
 import { sessionManager, InternalSession } from '../session-manager.js';
 import { PORTAL_URLS, USTVA_PAGE_KZ_MAP } from './constants.js';
+import { TakeoverChoice, NO_TAKEOVER } from './datenuebernahme.js';
 
 function periodToElsterValue(period: string | number): string {
   if (typeof period === 'string' && period.startsWith('Q')) {
@@ -19,12 +20,17 @@ export class ElsterUstva extends ElsterBase {
    * The flow runs until the ELSTER "Prüfung" passes, then waits for explicit
    * confirmation via confirmTransmit() before clicking "Absenden".
    */
-  startTransmitSession(report: Record<string, number>, year: number, period: string | number): string {
+  startTransmitSession(
+    report: Record<string, number>,
+    year: number,
+    period: string | number,
+    takeover: TakeoverChoice = NO_TAKEOVER,
+  ): string {
     const session = sessionManager.create('USTVA');
 
     const logMsg = (msg: string) => { session.progress.push(msg); log.info(msg); };
 
-    this.runWithCheckpoint(session, report, year, period, logMsg).catch((err: Error) => {
+    this.runWithCheckpoint(session, report, year, period, takeover, logMsg).catch((err: Error) => {
       session.status = 'ERROR';
       session.errors = [...(session.errors || []), err.message];
       session.result = { success: false, error: err.message };
@@ -60,6 +66,7 @@ export class ElsterUstva extends ElsterBase {
     report: Record<string, number>,
     year: number,
     period: string | number,
+    takeover: TakeoverChoice,
     logMsg: (m: string) => void,
   ): Promise<void> {
     session.status = 'LOGGING_IN';
@@ -72,7 +79,7 @@ export class ElsterUstva extends ElsterBase {
 
       session.status = 'OPENING_FORM';
       logMsg(`Opening UStVA form for ${year}...`);
-      await this.openForm(page, year);
+      await this.openForm(page, year, takeover, logMsg);
       await this.selectPeriodOnStartseite(page, period);
 
       session.status = 'FILLING_PAGES';
@@ -126,7 +133,12 @@ export class ElsterUstva extends ElsterBase {
     }
   }
 
-  private async openForm(page: Page, year: number): Promise<void> {
+  private async openForm(
+    page: Page,
+    year: number,
+    takeover: TakeoverChoice,
+    logMsg: (m: string) => void,
+  ): Promise<void> {
     await page.goto(PORTAL_URLS.ustvaForm, { waitUntil: 'networkidle2', timeout: 60000 });
 
     await page.waitForSelector('#zeitraumJahr', { timeout: 15000 });
@@ -154,31 +166,7 @@ export class ElsterUstva extends ElsterBase {
       await new Promise(r => setTimeout(r, 3000));
     }
 
-    await this.skipDataImportIfPresent(page);
-  }
-
-  private async skipDataImportIfPresent(page: Page): Promise<void> {
-    const isDatenuebernahme = await page.evaluate(() => {
-      const bodyText = document.body.innerText;
-      return bodyText.includes('Datenübernahme') || bodyText.includes('Ohne Datenübernahme');
-    });
-    if (!isDatenuebernahme) return;
-
-    log.info('Data-import page detected → clicking "Ohne Datenübernahme fortfahren"...');
-    const clicked = await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('button, a, input[type="button"]'));
-      const btn = btns.find(b => {
-        const txt = b.textContent?.trim() || (b as HTMLInputElement).value || '';
-        return txt.includes('Ohne Datenübernahme') || txt.includes('ohne Datenübernahme');
-      });
-      if (btn) { (btn as HTMLElement).click(); return true; }
-      return false;
-    });
-    if (clicked) {
-      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-      await new Promise(r => setTimeout(r, 2000));
-      await this.handleModals(page);
-    }
+    await this.handleDatenuebernahme(page, takeover, logMsg);
   }
 
   private async selectPeriodOnStartseite(page: Page, period: string | number): Promise<void> {

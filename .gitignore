@@ -13,3 +13,4 @@ downloads/
 .idea/
 .vscode/
 *.tsbuildinfo
+.wt/
