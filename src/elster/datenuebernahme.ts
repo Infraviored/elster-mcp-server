@@ -43,34 +43,6 @@ export type TakeoverChoice =
 
 export const NO_TAKEOVER: TakeoverChoice = { mode: 'none' };
 
-/**
- * Normalises the `takeover` tool argument.
- *
- * undefined / "none" / false  → none (default: behave as before)
- * "latest" / true             → most recently sent candidate
- * 2024 / "2024"               → the candidate for that tax year
- * "537842781"                 → that exact aufgabeId
- */
-export function parseTakeoverChoice(raw: unknown): TakeoverChoice {
-  if (raw == null || raw === false || raw === 'none' || raw === '') return { mode: 'none' };
-  if (raw === true || raw === 'latest') return { mode: 'latest' };
-
-  if (typeof raw === 'number') {
-    if (!Number.isInteger(raw)) throw new Error(`Invalid takeover value: ${raw}`);
-    return isYear(raw) ? { mode: 'year', year: raw } : { mode: 'aufgabeId', aufgabeId: String(raw) };
-  }
-
-  if (typeof raw === 'string') {
-    if (/^\d+$/.test(raw)) {
-      const n = parseInt(raw, 10);
-      return isYear(n) ? { mode: 'year', year: n } : { mode: 'aufgabeId', aufgabeId: raw };
-    }
-    throw new Error(`Invalid takeover value: "${raw}". Use "none", "latest", a tax year, or an aufgabeId.`);
-  }
-
-  throw new Error(`Invalid takeover value of type ${typeof raw}.`);
-}
-
 function isYear(n: number): boolean {
   return n >= 1990 && n <= 2099;
 }
@@ -256,6 +228,3 @@ export function formatCandidates(candidates: TakeoverCandidate[]): string {
     .join(' | ');
 }
 
-export function logCandidates(candidates: TakeoverCandidate[], prefix = ''): void {
-  log.info(`${prefix}Datenübernahme candidates: ${formatCandidates(candidates)}`);
-}

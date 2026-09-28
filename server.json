@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Infraviored/elster-mcp-server",
-  "description": "Drive the German tax portal ELSTER via Puppeteer: submit UStVA, prepare EUER/ESt, sync inbox.",
+  "description": "Fill any ELSTER tax form (ESt, EÜR, UStVA, …) by Kennzahl and check it. You click send.",
   "version": "0.1.0",
   "repository": {
     "url": "https://github.com/Infraviored/elster-mcp-server",
@@ -26,8 +26,7 @@
         { "name": "ELSTER_ZIP", "description": "ZIP code.", "isRequired": false, "format": "string" },
         { "name": "ELSTER_CITY", "description": "City.", "isRequired": false, "format": "string" },
         { "name": "ELSTER_COUNTRY", "description": "ISO country code, default DE.", "isRequired": false, "format": "string" },
-        { "name": "ELSTER_HEADLESS", "description": "Run Chromium headless (true/false). Default true.", "isRequired": false, "format": "string" },
-        { "name": "ELSTER_EST_SKIP_EUR", "description": "If 1, skip the EUER pre-hook in ESt sessions.", "isRequired": false, "format": "string" }
+        { "name": "ELSTER_HEADLESS", "description": "Run Chromium headless (true/false). Default true.", "isRequired": false, "format": "string" }
       ]
     }
   ]

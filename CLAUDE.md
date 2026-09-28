@@ -11,60 +11,30 @@ npm run dev          # tsc --watch
 npm start            # node dist/index.js (stdio MCP server)
 ```
 
-There is **no test suite, no linter, and no CI** in this repo. `tsc` is the only automated check — run `npm run build` after edits.
-
-Manual verification of a Puppeteer flow: set `ELSTER_HEADLESS=false` and run the tool; failure screenshots land in `./screenshots/` (gitignored), downloads in `./downloads/`.
+No linter, no CI. `npm run build` (tsc) plus `node tools/engine-selftest.mjs` (offline guard tests) are the automated checks; see Testing under the form engine.
 
 ## Architecture
 
-Single-process stdio MCP server that automates the ELSTER **web portal** with a real logged-in browser session. There is no ERiC/XML submission path — everything goes through Puppeteer clicking the same Online-Formular a human uses.
+Single-process stdio MCP server that automates the ELSTER **web portal** with a real logged-in browser session. There is no ERiC submission path, and no code path that sends a return (see the form engine's invariants).
 
-Three layers:
+Layers:
 
 1. **`src/index.ts`** — the whole MCP surface. `TOOLS[]` (JSON-schema tool declarations) and `dispatch()` (a single `switch`) are the only places tools are registered. Adding a tool means editing both, in the same file. Errors from `dispatch` are caught centrally and returned as `{ error }` with `isError: true`.
-2. **`src/elster/*.ts`** — one class per ELSTER flow, all extending `ElsterBase`. Each owns its own browser instance.
-3. **`src/session-manager.ts` + `src/config.ts` + `src/logger.ts`** — process-wide singletons.
+2. **`src/elster/engine.ts` + `engine-driver.ts`** — the form engine; all form filling goes through it (next section).
+3. **Read-only portal readers**, each extending `ElsterBase` with its own short-lived browser: `submissions.ts` (history + protocols), `sync.ts` (Übermittelte Formulare, inbox), `edaten.ts` (pre-filled data), `datenuebernahme.ts` (takeover offers), `belege.ts` (receipts, used by the engine).
+4. **`src/config.ts` + `src/logger.ts`** — process-wide singletons. `log.*` writes to **stderr only**; stdout is the MCP stdio channel and must stay clean JSON-RPC.
 
-### The async-session pattern (important)
-
-MCP tool calls must return fast, but a UStVA/EÜR/ESt run takes minutes. So `*_start` tools are **fire-and-forget**:
-
-- `startSession()` / `startTransmitSession()` creates a session, kicks off `this.run(...)` **without awaiting**, and returns the `sessionId` synchronously.
-- The background run mutates `session.status` / `session.progress` in place; the client polls `elster_session_status`.
-- Cross-call rendezvous happens through promise resolvers stashed on the session object (`_confirmResolve`, `_resultResolve`, `_doneResolve` in `InternalSession`). `elster_ustva_confirm` resolves `_confirmResolve`, which unblocks the paused background run, and awaits `_resultResolve` for the ticket.
-- Sessions self-delete one hour after the run finishes (`scheduleCleanup`). Nothing is persisted — a server restart loses all sessions.
-
-Consequence: state is **in-memory only** and each class holds a single `this.browser` / `this.page`. Two concurrent sessions of the same kind would clobber each other's browser handles.
-
-### Safety invariants — do not weaken these
-
-- `elster_ustva_confirm` is the **only** code path that clicks "Absenden". `runWithCheckpoint` parks at `AWAITING_CONFIRM` behind a promise with a 15-minute timeout; nothing transmits without that second explicit tool call.
-- `ElsterEur` and `ElsterEst` stop at "Prüfen". EÜR then attempts "Speichern und Verlassen"; ESt just holds the browser open 30 minutes. Neither has an Absenden path.
-- `fillKzInput` **throws** if an input-tax Kennziffer (60/61/66/67) gets a negative value — that always indicates a sign bug upstream, and a wrong sign here means a wrong tax filing. Do not "fix" it by clamping silently.
-- Sync/history/inbox tools are read-only.
-
-### Selector strategy
-
-ELSTER's markup is unstable, so every interaction is defensive and layered, in this order: id/name substring selector → visible-check (`offsetParent !== null`) → text/label search via `page.evaluate` → XPath fallback. `fillKzInput` and `fillFieldByLabel` are the reference implementations of that cascade; copy them rather than writing a bare `page.click(selector)`.
-
-Other recurring conventions:
-
-- `ElsterBase.handleModals()` is called after nearly every navigation. ELSTER interrupts flows with "Wiederaufnahme"/"Eingabefehler"/"Formular verlassen" dialogs; the German body-text substrings it matches are the actual contract.
-- Page walking (`walkThroughPages`, `walkAndFillPages`, `walkAndFill`) loops "fill current page → click Nächste Seite" with a `MAX_PAGES` cap and a `sameUrlCount >= 3` stuck-detector. Keep both guards when adding a flow.
-- Fixed `setTimeout` sleeps are used everywhere instead of `waitForSelector` on the post-action state, because ELSTER re-renders asynchronously without stable markers. Timings are load-bearing.
-- `log.*` writes to **stderr only** — stdout is the MCP stdio channel and must stay clean JSON-RPC.
+The readers still click through pages: `ElsterBase.handleModals()` after navigations (ELSTER interrupts with "Wiederaufnahme"/"Eingabefehler"/"Formular verlassen"; the German body-text substrings it matches are the contract) and fixed sleeps, because the portal re-renders without stable markers.
 
 ### Config
 
-`loadConfig()` merges, in precedence order: env var → `config.json` (path from `ELSTER_CONFIG_PATH`, default `./config.json`) → `DEFAULTS`. Result is cached in a module-level variable for the process lifetime; `resetConfigCache()` exists but nothing calls it. Never read `process.env` directly in flow code — add the key to `config.ts` and to `server.json`'s `environmentVariables` list.
-
-`config.est.skipEurPreHook` / `ELSTER_EST_SKIP_EUR` is declared in config and documented but **not read anywhere** in the flows — dead config, not a working feature.
+`loadConfig()` merges, in precedence order: env var → `config.json` (path from `ELSTER_CONFIG_PATH`, default `./config.json`) → `DEFAULTS`, cached for the process lifetime. Never read `process.env` directly — add the key to `config.ts` and to `server.json`'s `environmentVariables` list.
 
 ### Datenübernahme (carrying data over from an earlier submission)
 
 After the year is picked on a form's entry page, ELSTER interposes
-`/eportal/interpreter/fruehereAbgaben/<formSlug>-<year>`. `src/elster/datenuebernahme.ts` owns
-this page; `ElsterBase.handleDatenuebernahme()` is the entry point all three flows call.
+`/eportal/interpreter/fruehereAbgaben/<formSlug>-<year>`. `src/elster/datenuebernahme.ts` reads
+this page for `elster_datenuebernahme_list`; the engine's `newForm` handles it over HTTP.
 
 The page's contract, confirmed against the live portal:
 
@@ -82,7 +52,7 @@ The page's contract, confirmed against the live portal:
 offer. Falling through to a blank form after the user asked to carry last year's data over
 would silently produce a wrong return, so an unmet request must fail rather than degrade.
 
-`ElsterBase.selectFormYear()` picks the year option by `<year>-` prefix rather than assuming
+`ElsterBase.selectFormYear()` (used by the readers) picks the year option by `<year>-` prefix rather than assuming
 `<year>-v1` — older ESt years use `<year>-v_<year>`.
 
 ### Reading back what was submitted (`submissions.ts`)
@@ -110,8 +80,8 @@ Protocol markup is stable and worth parsing rather than screen-scraping text:
 `.eoprint__page` is one form (its `<h1>` names it), `h2`–`h4` nest the section path, and
 `table.eoprint__table` rows are `[Zeile, Label, Value]` — or `[Zeile, Value]` for checked
 fields. The value cell's `<span data-name="id-N-ArbL-…-E0200204_usb1_1-1-1-1">` is **ELSTER's
-own field id**, which is what `elster_est_start`'s `data` keys match against — so a parsed
-protocol can be fed straight back into a new filing.
+own field id**; its `E…` Kennzahl is what `elster_form_set` takes, so a parsed protocol can
+be fed straight back into a new filing.
 
 Two parsing traps, both already handled: header values contain colons
 ("Eingang auf Server: 31.07.2025, 23:32:07"), so meta labels are bounded by the *next label*,
@@ -120,8 +90,8 @@ not the next colon; and that scan must run on a copy with `.eoprint__page` /
 
 ## The form engine (`engine.ts` + `engine-driver.ts`) — use this for filling
 
-The per-form click flows (`ustva.ts`, `eur.ts`, `est.ts`, `formfill.ts`) predate it and are
-fragile. **New work goes through the engine**; it drives *any* ELSTER form over HTTP.
+It drives *any* ELSTER form over HTTP. (It replaced per-form click flows for UStVA, EÜR and
+ESt, which were removed on 28.09.2026.)
 
 Why it works: the Online-Formular is a plain `application/x-www-form-urlencoded` POST to
 `#form`'s `action`. Replaying it with `fetch` from inside the logged-in tab needs no clicks,
@@ -169,6 +139,15 @@ Invariants — do not weaken:
   engine is on a `/versenden/` page, `post` accepts only EINGABE/PRUEFEN and `press` is
   refused outright — "Absenden" is `#defaultbutton` **without a value**, so it cannot be
   screened by command text. Do not widen any of this.
+- **Sending is the user's click, by construction.** `elster_form_handoff` saves the form,
+  launches a *separate, visible* browser with its own login, opens the draft there via the
+  driver, runs Prüfung, `goto`s the resulting page (so ELSTER's own signing scripts load)
+  and clicks only the button whose value is exactly the SENDEN SwitchModus. Then it calls
+  `browser.disconnect()`: the MCP keeps no handle on that window, so nothing it runs can
+  click "Absenden" — not even in bypass mode, where any token or flag the server checks
+  would be readable by the agent. Until that browser process exits, `withSession` refuses
+  every engine call, because an engine re-login could end the user's session mid-sending.
+  Do not add a code path that clicks "Absenden", with or without confirmation.
 - Only one form can be open per ELSTER session. Opening a draft the server still holds
   lands on "kann nicht geöffnet werden"; `openDraft` re-enters via its SwitchModus button.
 
@@ -192,14 +171,10 @@ guards. Beyond that there is no test suite. `tools/mcp-call.mjs '[["tool",{args}
 built server over stdio exactly like an MCP client (needs the `ELSTER_*` env, e.g. from
 `~/.elster/run-mcp.sh` minus its `exec` line); `MCP_CALL_FULL=1` disables output truncation.
 
-### Kennziffer / field mapping
+### Constants
 
-`src/elster/constants.ts` is the single source of truth for what gets filled where:
-
-- `KENNZIFFERN` — supported UStVA codes plus `NET` (Bemessungsgrundlage) vs `TAX` (tax amount) semantics. Exposed verbatim via `elster_kennziffern_list`.
-- `USTVA_PAGE_KZ_MAP` — ELSTER page slug (last URL segment) → which codes live on that page. `walkThroughPages` fills only what this map says a page contains, so a new Kennziffer needs an entry here or it is silently skipped.
-- `EUR_FIELD_MAP` — friendly field name → candidate German labels + `KzNNN` patterns for the EÜR form.
-- `PORTAL_URLS` — all portal entry points.
+`src/elster/constants.ts`: `KENNZIFFERN` (UStVA codes with `NET` Bemessungsgrundlage vs
+`TAX` amount semantics, exposed via `elster_kennziffern_list`) and `PORTAL_URLS`.
 
 ### XML
 

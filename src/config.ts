@@ -32,9 +32,6 @@ export interface ElsterConfig {
   ustva: {
     reverseChargeSuppliers: ReverseChargeSupplier[];
   };
-  est: {
-    skipEurPreHook: boolean;
-  };
 }
 
 const DEFAULTS: ElsterConfig = {
@@ -56,7 +53,6 @@ const DEFAULTS: ElsterConfig = {
     ],
   },
   ustva: { reverseChargeSuppliers: [] },
-  est: { skipEurPreHook: false },
 };
 
 function readJson(file: string): Partial<ElsterConfig> {
@@ -112,9 +108,6 @@ export function loadConfig(): ElsterConfig {
     ustva: {
       reverseChargeSuppliers: fromFile.ustva?.reverseChargeSuppliers ?? DEFAULTS.ustva.reverseChargeSuppliers,
     },
-    est: {
-      skipEurPreHook: envBool('ELSTER_EST_SKIP_EUR', fromFile.est?.skipEurPreHook ?? DEFAULTS.est.skipEurPreHook),
-    },
   };
 
   for (const dir of [merged.runtime.downloadDir, merged.runtime.screenshotDir]) {
@@ -126,8 +119,4 @@ export function loadConfig(): ElsterConfig {
 
   cached = merged;
   return merged;
-}
-
-export function resetConfigCache(): void {
-  cached = null;
 }

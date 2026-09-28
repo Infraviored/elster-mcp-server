@@ -1,7 +1,7 @@
 {
   "name": "elster-mcp-server",
   "version": "0.1.0",
-  "description": "Model Context Protocol (MCP) server for ELSTER (German tax portal) automation via Puppeteer. Submit UStVA, prepare EUER/ESt, sync inbox and history.",
+  "description": "MCP server for the German tax portal ELSTER: fill any form (ESt, EÜR, UStVA, …) by Kennzahl, check and review it, read past submissions. It never submits; you click send.",
   "mcpName": "io.github.Infraviored/elster-mcp-server",
   "type": "module",
   "homepage": "https://github.com/Infraviored/elster-mcp-server",

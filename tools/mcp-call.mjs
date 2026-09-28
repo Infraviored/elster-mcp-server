@@ -20,4 +20,6 @@ for (const [name, args] of calls) {
   console.log(`\n=== ${name} ${JSON.stringify(args || {}).slice(0, 120)} (${Date.now() - t0} ms)${r.isError ? ' ERROR' : ''}`);
   console.log(process.env.MCP_CALL_FULL || text.length <= 4000 ? text : text.slice(0, 4000) + `\n… [${text.length} chars]`);
 }
+// MCP_CALL_HOLD=<seconds> keeps the server alive, e.g. so a handoff window stays open.
+if (process.env.MCP_CALL_HOLD) await new Promise(r => setTimeout(r, Number(process.env.MCP_CALL_HOLD) * 1000));
 await client.close();

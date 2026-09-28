@@ -1,4 +1,5 @@
-import { Page } from 'puppeteer';
+import puppeteer, { Page } from 'puppeteer';
+import { loadConfig } from '../config.js';
 import { ElsterBase } from './base.js';
 import { installDriver } from './engine-driver.js';
 import { log } from '../logger.js';
@@ -24,6 +25,8 @@ import { BelegUploadInput, prepareBeleg, postBelegInPage, listBelegeInPage } fro
 export class ElsterEngine extends ElsterBase {
   private queue: Promise<unknown> = Promise.resolve();
   private loggedIn = false;
+  /** True while a handoff window (see handoff()) is open for the user. */
+  private handoffOpen = false;
 
   /** Keep in sync with ALLOWED_COMMANDS / ALLOWED_MODES in engine-driver.ts. */
   static readonly ALLOWED_COMMANDS = new Set([
@@ -138,6 +141,10 @@ export class ElsterEngine extends ElsterBase {
    */
   private async withSession<T>(label: string, fn: (page: Page) => Promise<T>): Promise<T> {
     return this.serial(async () => {
+      if (this.handoffOpen) {
+        throw new Error('A handoff window is open for the user to send. The engine is paused until it is '
+          + 'closed, so a re-login here cannot end that session.');
+      }
       for (let attempt = 1; attempt <= 2; attempt++) {
         const page = await this.ensurePage();
         let result: T;
@@ -304,5 +311,97 @@ export class ElsterEngine extends ElsterBase {
   async save() {
     const r = await this.call<any>('saveDraft');
     return { saved: /meinelster/.test(r.url), ...r };
+  }
+
+  /**
+   * Hands the finished form to the user for sending.
+   *
+   * Saves the form open in the engine, then opens a SEPARATE, VISIBLE browser
+   * with its own login, opens that draft there, runs "Prüfen" and — only if it
+   * is clean — clicks "Weiter" onto the "Formular absenden" page. Then the
+   * puppeteer connection to that window is dropped: from here on the MCP has
+   * no handle on it at all. "Absenden" is clicked by the user, never by code.
+   *
+   * The engine refuses further calls until that window is closed, because a
+   * re-login from the engine could end the user's session mid-sending.
+   */
+  async handoff(aufgabeId?: number) {
+    if (this.handoffOpen) throw new Error('A handoff window is already open.');
+
+    // The draft has to be saved, or the new session cannot open it.
+    const url = await this.withSession('url', p => p.evaluate(() => ((window as any).EO?.url as string) || ''));
+    const saved = /\/eportal\/interpreter\//.test(url);
+    if (saved) await this.save();
+    const drafts = await this.drafts();
+    // Saving gives the draft a new aufgabeId; the newest draft is the one just saved.
+    const id = saved ? drafts[0]?.aufgabeId : (aufgabeId ?? drafts[0]?.aufgabeId);
+    if (!id) throw new Error('no draft to hand off');
+    if (!saved && aufgabeId && !drafts.some((d: any) => d.aufgabeId === aufgabeId)) {
+      throw new Error(`draft ${aufgabeId} not found; see elster_drafts_list`);
+    }
+
+    const cfg = loadConfig();
+    const browser = await puppeteer.launch({
+      headless: false,
+      defaultViewport: null,
+      args: cfg.runtime.browserArgs.filter(a => !/^--(headless|window-size)/.test(a)).concat('--start-maximized'),
+    });
+    this.handoffOpen = true;
+    const proc = browser.process();
+    proc?.once('exit', () => { this.handoffOpen = false; log.info('[handoff] window closed; engine resumes'); });
+
+    let stage = 'login';
+    try {
+      const page = (await browser.pages())[0] ?? await browser.newPage();
+      await this.ensureLoggedIn(page);
+      stage = 'open draft';
+      await page.evaluate(installDriver);
+      await page.evaluate((i: number) => (window as any).EO.openDraft(i), id);
+      stage = 'check';
+      const check = await page.evaluate(() => (window as any).EO.check());
+      // Render the server's current state natively so the page is live and
+      // ELSTER's own scripts (which sign on "Absenden") are loaded.
+      const at = await page.evaluate(() => (window as any).EO.url as string);
+      await page.goto(at, { waitUntil: 'networkidle2', timeout: 60000 });
+      if (!check.ok) {
+        return this.detach(browser, { ok: false, aufgabeId: id, url: page.url(), errors: check.panel,
+          note: 'Prüfung has errors. The window shows them; fix them there or close it and fix via the engine.' });
+      }
+      stage = 'Weiter';
+      // The exact command a human's "Weiter" posts after a clean Prüfung.
+      const REVIEW = JSON.stringify({ SwitchModus: { ignoreSkippableErrors: false, target: 'SENDEN', force: false } });
+      const found = await page.evaluate((cmd: string) =>
+        Array.from(document.querySelectorAll<HTMLButtonElement>('button[name="reqCmd"]')).some(b => {
+          try { return JSON.stringify(JSON.parse(b.value)) === cmd; } catch { return false; }
+        }), REVIEW);
+      if (found) {
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }),
+          page.evaluate((cmd: string) => {
+            Array.from(document.querySelectorAll<HTMLButtonElement>('button[name="reqCmd"]')).find(b => {
+              try { return JSON.stringify(JSON.parse(b.value)) === cmd; } catch { return false; }
+            })!.click();
+          }, REVIEW),
+        ]);
+      }
+      const onSendPage = /\/versenden\//.test(page.url());
+      return this.detach(browser, {
+        ok: onSendPage, aufgabeId: id, url: page.url(), result: check.result,
+        note: onSendPage
+          ? 'The window shows "Formular absenden". Nothing has been sent. The user reviews it and clicks '
+            + '"Absenden" themselves, then closes the window; the engine is paused until then.'
+          : 'Prüfung is clean but the window did not reach "Formular absenden"; the user clicks "Weiter" there.',
+      });
+    } catch (e) {
+      // Leave the window to the user either way; never close their session.
+      await this.detach(browser, null);
+      throw new Error(`handoff failed at ${stage}: ${(e as Error).message}. The window stays open.`);
+    }
+  }
+
+  /** Drops the puppeteer connection; the window stays open for the user. */
+  private async detach<T>(browser: import('puppeteer').Browser, result: T): Promise<T> {
+    await browser.disconnect().catch(() => {});
+    return result;
   }
 }
