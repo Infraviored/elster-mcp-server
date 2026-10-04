@@ -93,8 +93,9 @@ elster_form_add_row{ group: "AufwendungenArbeitsmittel",
 elster_form_check  → { ok: true, result: ["Erstattung: 1.655,21 €"] }
 elster_form_review → every row that would be transmitted, with its source
 elster_form_handoff→ a browser window opens on "Formular absenden" — you click
-elster_submission_protocol { formFilter: "ESt", years: [2025] }
-                   → confirm what arrived
+elster_form_handoff_wait
+                   → returns when you close the window: Transferticket,
+                     protocol saved as HTML + PDF
 ```
 
 ## Tools
@@ -106,15 +107,18 @@ elster_submission_protocol { formFilter: "ESt", years: [2025] }
 | | `elster_form_page` / `elster_form_crawl` | Reads one page / walks a whole form (fields, repeat groups, navigation) |
 | | `elster_form_set` | Sets fields by Kennzahl or full field name |
 | | `elster_form_add_row` / `elster_form_delete_row` | Adds or removes table rows |
+| | `elster_form_attach` | Uploads PDF/XML files into a form's attachments (e.g. Einspruch "Anhänge") |
 | | `elster_form_press` | Escape hatch for other allowlisted form commands |
 | | `elster_form_save` | Saves the form as a draft and closes it |
 | Check | `elster_form_check` | Runs "Prüfen": errors, hints, provisional result |
 | | `elster_form_review` | Reads the "Formular absenden" overview row by row |
 | | `elster_form_handoff` | Opens the form on "Formular absenden" in a visible window; **you** send |
+| | `elster_form_handoff_wait` | Waits until you close that window; if you sent, saves the transmission protocol as HTML + PDF |
 | Data | `elster_edaten_fetch` | Pre-filled data the tax office holds for a year |
 | | `elster_datenuebernahme_list` | Earlier submissions a new form can carry over |
 | | `elster_belege_list` / `elster_beleg_upload` | Lists / uploads receipts in "Meine Belege" |
 | History | `elster_submissions_list` / `elster_submission_protocol` | Past submissions and their full transmitted content |
+| | `elster_submission_archive` | Saves a submission's Übertragungsprotokoll as HTML + PDF, as proof |
 | | `elster_sync_history` / `elster_sync_inbox` | "Übermittelte Formulare" and the inbox, optionally with PDFs |
 | Setup | `elster_login_test` / `elster_config_show` | Checks the login / shows the config (password redacted) |
 | UStVA helpers | `elster_kennziffern_list`, `elster_ustva_detect_reverse_charge`, `elster_ustva_generate_xml` | Kennziffer reference, §13b detection, XML snapshot for your archive (never transmitted) |

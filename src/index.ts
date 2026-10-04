@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from 'path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -26,6 +27,9 @@ const sync = new ElsterSync();
 const submissions = new ElsterSubmissions();
 const edaten = new ElsterEdaten();
 const engine = new ElsterEngine();
+/** Submission ids seen when the last handoff window opened; tells handoff_wait what is new. */
+let handoffBaseline: Promise<Set<number> | null> | null = null;
+const archiveDir = (dir?: string) => dir || path.resolve(loadConfig().runtime.downloadDir, 'nachweise');
 
 class LoginProbe extends ElsterBase {
   async probe(): Promise<{ ok: boolean; finalUrl?: string; error?: string }> {
@@ -411,12 +415,32 @@ const TOOLS: Tool[] = [
     name: 'elster_form_handoff_wait',
     description:
       'Call right after elster_form_handoff: blocks until the user closes the handoff window (or the timeout '
-      + 'passes), then lists the newest submissions so you can tell whether the form was sent and with which '
-      + 'Transferticket. Read-only. If it returns closed:false, call it again.',
+      + 'passes). If a new submission appeared, saves its Übertragungsprotokoll as HTML + PDF and returns the '
+      + 'Transferticket and file paths. Read-only. If it returns closed:false, call it again.',
     inputSchema: {
       type: 'object',
       properties: {
         timeoutMinutes: { type: 'number', description: 'Maximum wait, default 10.' },
+        archiveDir: { type: 'string', description: 'Where to save the protocol of a new submission (HTML + PDF); default <downloadDir>/nachweise.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'elster_submission_archive',
+    description:
+      'Saves the Übertragungsprotokoll of submitted forms as HTML and PDF, as proof of what was sent '
+      + '(Transferticket, receipt time on the server, full content incl. attachment names). Select by '
+      + 'nachrichtId (from elster_submissions_list) or by formFilter/years (newest first, limit default 1). '
+      + 'Default folder: <downloadDir>/nachweise. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nachrichtId: { type: 'integer', description: 'nachrichtId.id from elster_submissions_list.' },
+        formFilter: { type: 'string', description: 'Regex on the form description, e.g. "^Einspruch$".' },
+        years: { type: 'array', items: { type: 'integer' } },
+        limit: { type: 'integer' },
+        dir: { type: 'string', description: 'Target folder (absolute).' },
       },
       additionalProperties: false,
     },
@@ -601,14 +625,31 @@ async function dispatch(name: string, args: any) {
       if (!w.closed) return jsonResult({ ...w, note: 'Window still open; call elster_form_handoff_wait again.' });
       try {
         const items = await submissions.list({});
-        return jsonResult({ ...w, newestSubmissions: items.slice(0, 3) });
+        const before = handoffBaseline ? await handoffBaseline : null;
+        handoffBaseline = null;
+        if (!before) return jsonResult({ ...w, newestSubmissions: items.slice(0, 3) });
+        const fresh = items.filter(i => !before.has(i.nachrichtId.id));
+        if (!fresh.length) return jsonResult({ ...w, sent: false, note: 'Window closed; nothing new was submitted.' });
+        const archived = await submissions.archive({ nachrichtIds: fresh.map(i => i.nachrichtId.id), dir: archiveDir(args.archiveDir) });
+        return jsonResult({ ...w, sent: true, newSubmissions: fresh, archived });
       } catch (e) {
         return jsonResult({ ...w, submissionsError: (e as Error).message, note: 'Window closed; read elster_submissions_list separately.' });
       }
     }
 
-    case 'elster_form_handoff':
+    case 'elster_form_handoff': {
+      // Remember what was already submitted, so handoff_wait can tell what the user sent.
+      handoffBaseline = new ElsterSubmissions().list({})
+        .then(items => new Set(items.map(i => i.nachrichtId.id)))
+        .catch(() => null);
       return jsonResult(await engine.handoff(args.aufgabeId));
+    }
+
+    case 'elster_submission_archive':
+      return jsonResult({ archived: await submissions.archive({
+        nachrichtIds: args.nachrichtId ? [args.nachrichtId] : undefined,
+        formFilter: args.formFilter, years: args.years, limit: args.limit, dir: archiveDir(args.dir),
+      }) });
 
     default:
       throw new Error(`Unknown tool: ${name}`);

@@ -148,8 +148,10 @@ Invariants — do not weaken:
   would be readable by the agent. Until that browser process exits, `withSession` refuses
   every engine call, because an engine re-login could end the user's session mid-sending.
   Do not add a code path that clicks "Absenden", with or without confirmation.
-  `elster_form_handoff_wait` blocks until that process exits (or a timeout) and then lists the
-  newest submissions, so the agent learns the outcome without asking the user.
+  `elster_form_handoff_wait` blocks until that process exits (or a timeout). `elster_form_handoff`
+  snapshots the submission ids first; anything new afterwards is what the user sent, and its
+  Übertragungsprotokoll is saved as HTML + PDF (`ElsterSubmissions.archive`, also exposed as
+  `elster_submission_archive`). The agent learns the outcome without asking the user.
 - Only one form can be open per ELSTER session. Opening a draft the server still holds
   lands on "kann nicht geöffnet werden"; `openDraft` re-enters via its SwitchModus button.
 

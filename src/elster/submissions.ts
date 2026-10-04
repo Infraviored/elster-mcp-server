@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { Page } from 'puppeteer';
 import { ElsterBase } from './base.js';
 import { log } from '../logger.js';
@@ -139,6 +141,79 @@ export class ElsterSubmissions extends ElsterBase {
     }
   }
 
+  /**
+   * Saves the Übertragungsprotokoll of submissions as HTML and PDF: the proof
+   * of what was transmitted (Transferticket, receipt time on the server, the
+   * full content including attachment names). Selects by nachrichtIds, or by
+   * formFilter/years (newest first, `limit`, default 1). Read-only.
+   */
+  async archive(opts: {
+    nachrichtIds?: number[];
+    formFilter?: string;
+    years?: number[];
+    limit?: number;
+    dir: string;
+  }): Promise<Array<{ description: string; sentAt: string; transferticket?: string; html?: string; pdf?: string; error?: string }>> {
+    const { browser, page } = await this.initBrowser();
+    try {
+      await this.ensureLoggedIn(page);
+      await this.openUebermittelteFormulare(page);
+      let refs = await this.readRows(page);
+      if (opts.nachrichtIds?.length) {
+        refs = refs.filter(r => opts.nachrichtIds!.includes(r.nachrichtId.id));
+      } else {
+        if (opts.formFilter) {
+          const re = new RegExp(opts.formFilter, 'i');
+          refs = refs.filter(r => re.test(r.description));
+        }
+        if (opts.years?.length) refs = refs.filter(r => r.year != null && opts.years!.includes(r.year));
+        refs = refs.slice(0, opts.limit ?? 1);
+      }
+      fs.mkdirSync(opts.dir, { recursive: true });
+      // ELSTER's own stylesheets, so the saved page looks like the portal's print view.
+      const styles: string[] = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map(l => (l as HTMLLinkElement).href));
+      const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+
+      const out: Array<{ description: string; sentAt: string; transferticket?: string; html?: string; pdf?: string; error?: string }> = [];
+      for (const ref of refs) {
+        try {
+          const fragment = await this.postReqCmd(page, JSON.stringify({
+            ViewMessageCommand: { nachrichtId: ref.nachrichtId, urlId: 'meineformulare', interactiveId: null },
+          }));
+          const protocol = await this.parseProtocolHtml(page, fragment);
+          const ticket = protocol.meta['Transferticket'] || `nachricht-${ref.nachrichtId.id}`;
+          const doc = `<!doctype html><html lang="de"><head><meta charset="utf-8">`
+            + `<title>${esc(ref.description)} – ${esc(ticket)}</title>`
+            + styles.map(h => `<link rel="stylesheet" href="${esc(h)}">`).join('')
+            // The fragment is a modal; show it as a plain page and drop its buttons.
+            + `<style>body{margin:24px;background:#fff}.modal,.modal__wrapper,.modal__content{position:static!important;display:block!important;`
+            + `visibility:visible!important;opacity:1!important;transform:none!important;max-height:none!important;overflow:visible!important}`
+            + `.modal__footer,button,.modal__close{display:none!important}</style></head><body>`
+            + `<p>Übertragungsprotokoll aus ELSTER, Meine Formulare, abgerufen am ${new Date().toLocaleString('de-DE')}.</p>`
+            + fragment + `</body></html>`;
+          const base = `${ref.description}_${ref.sentAt}_${ticket}`.replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 150);
+          const htmlPath = path.join(opts.dir, `${base}.html`);
+          const pdfPath = path.join(opts.dir, `${base}.pdf`);
+          fs.writeFileSync(htmlPath, doc);
+          const printPage = await browser.newPage();
+          try {
+            await printPage.setContent(doc, { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => {});
+            await printPage.pdf({ path: pdfPath, format: 'A4', printBackground: true, margin: { top: '12mm', bottom: '12mm', left: '10mm', right: '10mm' } });
+          } finally {
+            await printPage.close().catch(() => {});
+          }
+          out.push({ description: ref.description, sentAt: ref.sentAt, transferticket: protocol.meta['Transferticket'], html: htmlPath, pdf: pdfPath });
+        } catch (e: any) {
+          out.push({ description: ref.description, sentAt: ref.sentAt, error: e.message });
+        }
+      }
+      return out;
+    } finally {
+      await this.closeBrowser();
+    }
+  }
+
   private async openUebermittelteFormulare(page: Page): Promise<void> {
     await page.goto(PORTAL_URLS.meineFormulare, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 3000));
@@ -234,8 +309,10 @@ export class ElsterSubmissions extends ElsterBase {
     const reqCmd = JSON.stringify({
       ViewMessageCommand: { nachrichtId, urlId: 'meineformulare', interactiveId: null },
     });
-    const html = await this.postReqCmd(page, reqCmd);
+    return this.parseProtocolHtml(page, await this.postReqCmd(page, reqCmd));
+  }
 
+  private async parseProtocolHtml(page: Page, html: string): Promise<SubmissionProtocol> {
     const parsed = await page.evaluate((fragment: string) => {
       // Scripts do not execute via innerHTML, and the fragment is ELSTER's own
       // markup, so parsing it in a detached node is safe and keeps us on one DOM.
