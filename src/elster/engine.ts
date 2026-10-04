@@ -29,6 +29,8 @@ export class ElsterEngine extends ElsterBase {
   private loggedIn = false;
   /** True while a handoff window (see handoff()) is open for the user. */
   private handoffOpen = false;
+  /** Resolves when the handoff window's browser process exits. */
+  private handoffClosed: Promise<void> | null = null;
 
   /** Keep in sync with ALLOWED_COMMANDS / ALLOWED_MODES in engine-driver.ts. */
   static readonly ALLOWED_COMMANDS = new Set([
@@ -365,7 +367,11 @@ export class ElsterEngine extends ElsterBase {
     });
     this.handoffOpen = true;
     const proc = browser.process();
-    proc?.once('exit', () => { this.handoffOpen = false; log.info('[handoff] window closed; engine resumes'); });
+    this.handoffClosed = new Promise<void>(resolve => {
+      const done = () => { this.handoffOpen = false; log.info('[handoff] window closed; engine resumes'); resolve(); };
+      if (!proc) return done();
+      proc.once('exit', done);
+    });
 
     let stage = 'login';
     try {
@@ -406,7 +412,8 @@ export class ElsterEngine extends ElsterBase {
         ok: onSendPage, aufgabeId: id, url: page.url(), result: check.result,
         note: onSendPage
           ? 'The window shows "Formular absenden". Nothing has been sent. The user reviews it and clicks '
-            + '"Absenden" themselves, then closes the window; the engine is paused until then.'
+            + '"Absenden" themselves, then closes the window; the engine is paused until then. '
+            + 'Call elster_form_handoff_wait next.'
           : 'Prüfung is clean but the window did not reach "Formular absenden"; the user clicks "Weiter" there.',
       });
     } catch (e) {
@@ -414,6 +421,23 @@ export class ElsterEngine extends ElsterBase {
       await this.detach(browser, null);
       throw new Error(`handoff failed at ${stage}: ${(e as Error).message}. The window stays open.`);
     }
+  }
+
+  /**
+   * Waits until the user closes the handoff window, at most `timeoutMs`.
+   * Returns whether it was closed; the caller then reads the submissions list
+   * to see whether anything was sent.
+   */
+  async waitHandoff(timeoutMs: number): Promise<{ closed: boolean; waitedSeconds: number }> {
+    const t0 = Date.now();
+    if (!this.handoffOpen || !this.handoffClosed) return { closed: true, waitedSeconds: 0 };
+    let timer: NodeJS.Timeout | undefined;
+    const closed = await Promise.race([
+      this.handoffClosed.then(() => true),
+      new Promise<boolean>(r => { timer = setTimeout(() => r(false), timeoutMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    return { closed, waitedSeconds: Math.round((Date.now() - t0) / 1000) };
   }
 
   /** Drops the puppeteer connection; the window stays open for the user. */

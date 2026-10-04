@@ -75,41 +75,21 @@ export class ElsterBase {
       throw new Error(`ELSTER certificate not found at: ${cfg.auth.pfxPath}`);
     }
 
-    log.info('Navigating to ELSTER start page...');
-    await page.goto(PORTAL_URLS.start, { waitUntil: 'networkidle2', timeout: 60000 });
+    // Straight to the certificate login. Going via the start page, its login
+    // link and a "Zertifikat" method link that no longer exists cost ~12 s of
+    // networkidle waits and a 10 s selector timeout on every login.
+    log.info('Opening certificate login...');
+    await page.goto(PORTAL_URLS.loginCert, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    const currentUrl = page.url();
-    if (currentUrl.includes('mein-elster/startseite') || currentUrl.includes('eportal/mein-elster')
-        || currentUrl.includes('eportal/meinelster')) {
+    const isLoggedIn = (u: string) => u.includes('mein-elster/startseite') || u.includes('eportal/mein-elster')
+      || u.includes('eportal/meinelster');
+    if (isLoggedIn(page.url())) {
       log.info('Already logged in.');
       return true;
     }
 
-    const loginButton = await page.$('a[href*="login"], button.btn-login');
-    if (loginButton) {
-      log.info('Clicking login button...');
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle2' }),
-        loginButton.click(),
-      ]);
-    }
-
-    log.info('Selecting certificate login method...');
-    const certMethodSelector = 'a[href*="login/zertifikat"], #login-zertifikat';
-    try {
-      await page.waitForSelector(certMethodSelector, { timeout: 10000 });
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle2' }),
-        page.click(certMethodSelector),
-      ]);
-    } catch {
-      log.info('Certificate login page already loaded or selector differs.');
-    }
-
-    log.info('Waiting for certificate upload field...');
     const uploadSelector = 'input[type="file"], #loginZertifikat-dateiauswahl';
     await page.waitForSelector(uploadSelector, { timeout: 20000 });
-
     const uploadInput = await page.$(uploadSelector);
     if (!uploadInput) throw new Error('Certificate upload field not found.');
     // @ts-expect-error - puppeteer's typing on $() returns generic ElementHandle
@@ -117,27 +97,27 @@ export class ElsterBase {
     log.info('Certificate selected.');
 
     // Selecting the certificate makes ELSTER re-render the login box, which
-    // wipes anything already typed into the password field. So wait for the
-    // re-render, then type — and verify the value actually stuck, because a
-    // silently emptied field only surfaces as "Passwort enthält weniger als
-    // 6 Zeichen" after the submit.
-    await new Promise(r => setTimeout(r, 3000));
+    // wipes anything already typed into the password field. Instead of a fixed
+    // wait: type, give the re-render a moment, and retype until the value
+    // sticks. A silently emptied field would only surface as "Passwort enthält
+    // weniger als 6 Zeichen" after the submit.
     const passSelector = '#password, input[type="password"], input[id*="passwort"]';
     await page.waitForSelector(passSelector, { timeout: 10000 });
 
     let typed = 0;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      await new Promise(r => setTimeout(r, attempt === 1 ? 400 : 600));
       await page.evaluate((sel: string) => {
         const el = document.querySelector(sel) as HTMLInputElement | null;
         if (el) { el.value = ''; el.focus(); }
       }, passSelector);
-      await page.type(passSelector, cfg.auth.password, { delay: 30 });
+      await page.type(passSelector, cfg.auth.password);
+      await new Promise(r => setTimeout(r, 400));
       typed = await page.evaluate(
         (sel: string) => (document.querySelector(sel) as HTMLInputElement | null)?.value.length ?? 0,
         passSelector);
       if (typed === cfg.auth.password.length) break;
-      log.warn(`Password field held ${typed} of ${cfg.auth.password.length} characters, retrying (${attempt}/3).`);
-      await new Promise(r => setTimeout(r, 2000));
+      log.warn(`Password field held ${typed} of ${cfg.auth.password.length} characters, retrying (${attempt}/6).`);
     }
     if (typed !== cfg.auth.password.length) {
       throw new Error('Password field would not accept the full password.');
@@ -161,13 +141,12 @@ export class ElsterBase {
     if (!loginBtn) throw new Error('Login button not found.');
 
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
       loginBtn.click(),
     ]);
 
     const finalUrl = page.url();
-    if (finalUrl.includes('mein-elster/startseite') || finalUrl.includes('eportal/mein-elster')
-        || finalUrl.includes('eportal/meinelster')) {
+    if (isLoggedIn(finalUrl)) {
       log.info('Login successful.');
       return true;
     }
@@ -178,7 +157,7 @@ export class ElsterBase {
       log.info('Login successful; declining auto-saved form recovery.');
       await page.evaluate(() =>
         (document.getElementById('temporaereaufgaben_nein_button') as HTMLElement | null)?.click());
-      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
       return true;
     }
 

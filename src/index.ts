@@ -397,12 +397,26 @@ const TOOLS: Tool[] = [
       + 'it in a separate, visible browser window with its own login, runs "Prüfen" and, if clean, moves on '
       + 'to the "Formular absenden" page. Then the MCP detaches from that window: it cannot click anything '
       + 'there. The user checks the overview, clicks "Absenden" themselves and closes the window. Until the '
-      + 'window is closed the other elster_form_* tools refuse to run. Read the result afterwards with '
-      + 'elster_submissions_list / elster_submission_protocol.',
+      + 'window is closed the other elster_form_* tools refuse to run. Follow up with elster_form_handoff_wait, '
+      + 'which returns when the window is closed and shows what was sent.',
     inputSchema: {
       type: 'object',
       properties: {
         aufgabeId: { type: 'integer', description: 'Draft to hand off when no form is open; default: newest draft.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'elster_form_handoff_wait',
+    description:
+      'Call right after elster_form_handoff: blocks until the user closes the handoff window (or the timeout '
+      + 'passes), then lists the newest submissions so you can tell whether the form was sent and with which '
+      + 'Transferticket. Read-only. If it returns closed:false, call it again.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        timeoutMinutes: { type: 'number', description: 'Maximum wait, default 10.' },
       },
       additionalProperties: false,
     },
@@ -581,6 +595,13 @@ async function dispatch(name: string, args: any) {
 
     case 'elster_form_save':
       return jsonResult(await engine.save());
+
+    case 'elster_form_handoff_wait': {
+      const w = await engine.waitHandoff(Math.min(Math.max(args.timeoutMinutes ?? 10, 0.1), 60) * 60000);
+      if (!w.closed) return jsonResult({ ...w, note: 'Window still open; call elster_form_handoff_wait again.' });
+      const items = await submissions.list({});
+      return jsonResult({ ...w, newestSubmissions: items.slice(0, 3) });
+    }
 
     case 'elster_form_handoff':
       return jsonResult(await engine.handoff(args.aufgabeId));

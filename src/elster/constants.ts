@@ -25,6 +25,7 @@ export const KENNZIFFERN: Record<string, { type: 'NET' | 'TAX'; description: str
 
 export const PORTAL_URLS = {
   start: 'https://www.elster.de/eportal/start',
+  loginCert: 'https://www.elster.de/eportal/login/softpse',
   ustvaForm: 'https://www.elster.de/eportal/formulare-leistungen/alleformulare/ustvaeru',
   eurForm: 'https://www.elster.de/eportal/formulare-leistungen/alleformulare/euer',
   estForm: 'https://www.elster.de/eportal/formulare-leistungen/alleformulare/est',

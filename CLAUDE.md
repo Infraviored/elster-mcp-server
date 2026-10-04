@@ -148,6 +148,8 @@ Invariants — do not weaken:
   would be readable by the agent. Until that browser process exits, `withSession` refuses
   every engine call, because an engine re-login could end the user's session mid-sending.
   Do not add a code path that clicks "Absenden", with or without confirmation.
+  `elster_form_handoff_wait` blocks until that process exits (or a timeout) and then lists the
+  newest submissions, so the agent learns the outcome without asking the user.
 - Only one form can be open per ELSTER session. Opening a draft the server still holds
   lands on "kann nicht geöffnet werden"; `openDraft` re-enters via its SwitchModus button.
 
@@ -167,6 +169,8 @@ Portal facts learned the hard way:
   `anhangData` (`anhangUploadData[<id>].*`) is appended to the next form post, which must be the
   "Hochladen starten" button (`CreateMzbAnhangItems`); any other command drops the uploads.
   `elster_form_attach` does this. PDF/XML only, 10 MB per file.
+- Login goes straight to `/eportal/login/softpse` (~4 s). The old route via the start page and a
+  no-longer-existing "Zertifikat" link cost ~20 s, half of it a selector timeout.
 - Forms without a tax year (Einspruch) offer one form version (`23-v_23`) in `#zeitraumJahr`;
   `newForm` takes it.
 - Drafts: `/eportal/meineformulare`, buttons `oeffneEntwurf_<aufgabeId>` →
