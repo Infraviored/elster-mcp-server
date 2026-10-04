@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import puppeteer, { Page } from 'puppeteer';
 import { loadConfig } from '../config.js';
 import { ElsterBase } from './base.js';
@@ -36,6 +38,7 @@ export class ElsterEngine extends ElsterBase {
     'FillInProfile',
     'Enter', 'Continue', 'Cancel', 'FruehereAbgabeCommand',
     'OeffneAufgabeCommand', 'OeffneLetztenEntwurfCommand', 'SaveAufgabe', 'Finish',
+    'UploadMzbAnhang', 'CreateMzbAnhangItems',
   ]);
   static readonly ALLOWED_MODES = new Set(['EINGABE', 'PRUEFEN', 'ANLAGENAUSWAHL', 'AUTOVAST_ENTRY', 'VAST']);
 
@@ -234,6 +237,20 @@ export class ElsterEngine extends ElsterBase {
     if (rid) await this.call('jump', rid);
     await this.call('addRow', group, values);
     return this.groupResult(group);
+  }
+
+  /** Uploads local PDF/XML files into an attachment group (Einspruch "Anhänge"). */
+  async attach(rid: string | undefined, group: string, paths: string[]) {
+    const files = paths.map(p => {
+      const ext = path.extname(p).toLowerCase();
+      if (!['.pdf', '.xml'].includes(ext)) throw new Error(`${p}: only .pdf and .xml are accepted`);
+      const buf = fs.readFileSync(p);
+      if (buf.length > 10 * 1024 * 1024) throw new Error(`${p}: larger than 10 MB`);
+      return { name: path.basename(p), type: ext === '.pdf' ? 'application/pdf' : 'application/xml', b64: buf.toString('base64') };
+    });
+    if (rid) await this.call('jump', rid);
+    const r = await this.call<any>('attach', group, files);
+    return { ...r, ...(await this.groupResult(group)) };
   }
 
   async deleteRow(rid: string | undefined, group: string, index: number) {

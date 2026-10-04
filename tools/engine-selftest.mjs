@@ -27,6 +27,9 @@ t('SwitchModus TRANSFERAUFGABE', () => ElsterEngine.assertCommand('{"SwitchModus
 t('SwitchModus lowercase senden', () => ElsterEngine.assertCommand('{"SwitchModus":{"target":"senden"}}'), true);
 t('allowed JumpToPage', () => ElsterEngine.assertCommand({ JumpToPage: { target: { 'FormData-RID': { rid: 'FormData://x' } } } }), false);
 t('allowed DeleteMzbItem (row)', () => ElsterEngine.assertCommand({ DeleteMzbItem: { target: {} } }), false);
+t('allowed UploadMzbAnhang', () => ElsterEngine.assertCommand({ UploadMzbAnhang: { mzbName: 'anhang_mzb', multiUpload: true } }), false);
+t('allowed CreateMzbAnhangItems', () => ElsterEngine.assertCommand({ CreateMzbAnhangItems: { target: {} } }), false);
+t('SwitchToMeineBelege not allowed', () => ElsterEngine.assertCommand({ SwitchToMeineBelege: { modus: 'SELECT_RECEIPT' } }), true);
 t('buttonId loescheEntwurf_1', () => ElsterEngine.assertAllowed('loescheEntwurf_1'), true);
 t('buttonId sendenButton', () => ElsterEngine.assertAllowed('sendenButton'), true);
 // 2 amounts

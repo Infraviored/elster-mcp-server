@@ -161,6 +161,14 @@ Portal facts learned the hard way:
 - A new Anlage for a person: `EditDetachedMzbSemIndex{target: VAnlageX[0], semanticIndex:"PersonA"}`.
 - Anlage KAP "Überprüfung des Steuereinbehalts" (E1900501) requires both Sparer-Pauschbetrag
   lines (E1901401, E1901402), even when both are 0.
+- Attachments (Einspruch "5 - Anhänge", group `anhang_mzb`): each file is POSTed as multipart
+  `{file, reqCmd}` to the page URL, with `reqCmd` = the file input's `data-req-cmd`
+  (`UploadMzbAnhang`) and the CSRF header named by `<meta name="_csrf_header">`. The JSON answer's
+  `anhangData` (`anhangUploadData[<id>].*`) is appended to the next form post, which must be the
+  "Hochladen starten" button (`CreateMzbAnhangItems`); any other command drops the uploads.
+  `elster_form_attach` does this. PDF/XML only, 10 MB per file.
+- Forms without a tax year (Einspruch) offer one form version (`23-v_23`) in `#zeitraumJahr`;
+  `newForm` takes it.
 - Drafts: `/eportal/meineformulare`, buttons `oeffneEntwurf_<aufgabeId>` →
   `OeffneAufgabeCommand{aufgabeId}`.
 

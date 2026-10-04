@@ -316,6 +316,23 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'elster_form_attach',
+    description:
+      'Attaches local files to a form\'s upload group, e.g. the Einspruch page "5 - Anhänge" (group "anhang_mzb"). '
+      + 'PDF or XML, max 10 MB each, up to 20 files. Uploads each file the way the portal page does and creates '
+      + 'one row per file. Submits nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        rid: { type: 'string', description: 'Page with the upload, e.g. "FormData://einspruch-23-v_23/Startseite[0]/Anhaenge[0]".' },
+        group: { type: 'string', description: 'Upload group, e.g. "anhang_mzb".' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Absolute paths.' },
+      },
+      required: ['group', 'files'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'elster_form_delete_row',
     description: 'Deletes row `index` (0-based) of an inline repeat group on a page.',
     inputSchema: {
@@ -535,6 +552,9 @@ async function dispatch(name: string, args: any) {
 
     case 'elster_form_add_row':
       return jsonResult(await engine.addRow(args.rid, args.group, args.values));
+
+    case 'elster_form_attach':
+      return jsonResult(await engine.attach(args.rid, args.group, args.files));
 
     case 'elster_form_delete_row':
       return jsonResult(await engine.deleteRow(args.rid, args.group, args.index));

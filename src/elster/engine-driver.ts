@@ -20,7 +20,7 @@
  */
 export function installDriver(): string {
   const w = window as any;
-  if (w.EO && w.EO.version === 11) return 'already installed';
+  if (w.EO && w.EO.version === 13) return 'already installed';
 
   // ── Safety ──────────────────────────────────────────────────────────────
   // ALLOWLIST: the only reqCmd names this engine may post. Anything else —
@@ -35,6 +35,7 @@ export function installDriver(): string {
     'FillInProfile',
     'Enter', 'Continue', 'Cancel', 'FruehereAbgabeCommand',
     'OeffneAufgabeCommand', 'OeffneLetztenEntwurfCommand', 'SaveAufgabe', 'Finish',
+    'UploadMzbAnhang', 'CreateMzbAnhangItems',
   ]);
   // SwitchModus may only move between editing, checking and the Anlagen/eDaten
   // selection. SENDEN is the send overview (review() only), TRANSFERAUFGABE
@@ -109,7 +110,7 @@ export function installDriver(): string {
   };
 
   const EO: any = {
-    version: 11,
+    version: 13,
     doc: document as Document,
     url: location.href,
 
@@ -425,6 +426,58 @@ export function installDriver(): string {
       }
       const ov = this.overridesFor(values, `mzbs[${group}].newItem.fields[`);
       return this.post(btn.value, ov);
+    },
+
+    /**
+     * Attaches files to a repeat group that takes uploads (Einspruch "Anhänge").
+     * Same two steps as ELSTER's own page: each file is POSTed as multipart
+     * {file, reqCmd: the input's UploadMzbAnhang command} to the page URL, which
+     * answers with anhangUploadData[<id>].* fields; the next form post carries
+     * those fields and the server turns them into rows.
+     */
+    async attach(group: string, files: { name: string; type: string; b64: string }[]) {
+      const input = (Array.from(this.doc.querySelectorAll('input[type="file"][data-req-cmd]')) as HTMLInputElement[])
+        .find(i => {
+          try {
+            const c = JSON.parse(i.getAttribute('data-req-cmd') || '').UploadMzbAnhang;
+            return c && c.mzbName === group && c.multiUpload === true;
+          } catch { return false; }
+        });
+      if (!input) throw new Error(`no multi-upload for group "${group}" on this page`);
+      const checked = guard(input.getAttribute('data-req-cmd') || '');
+      if (checked.name !== 'UploadMzbAnhang') throw new Error('refused: unexpected upload command');
+      const page = new URL(this.url, location.origin);
+      if (page.origin !== location.origin || !page.pathname.startsWith('/eportal/interpreter/eingabe/')) {
+        throw new Error(`refused: upload target ${page.href}`);
+      }
+      const meta = (n: string) => (this.doc.querySelector(`meta[name="${n}"]`) as HTMLMetaElement | null)?.content;
+      const header = meta('_csrf_header') || 'X-CSRF-TOKEN';
+      const appends: [string, string][] = [];
+      const uploaded: string[] = [];
+      for (const f of files) {
+        const bin = Uint8Array.from(atob(f.b64), c => c.charCodeAt(0));
+        const fd = new FormData();
+        fd.append('file', new File([bin], f.name, { type: f.type }));
+        fd.append('reqCmd', checked.text);
+        const r = await fetch(page.pathname, {
+          method: 'POST', body: fd, credentials: 'include',
+          headers: { [header]: meta('_csrf') || this.csrf() || '', Accept: 'text/html, application/json' },
+        });
+        let json: any;
+        try { json = JSON.parse(await r.text()); } catch { throw new Error(`upload of ${f.name}: HTTP ${r.status}, no JSON`); }
+        if (json.errorMessage || !json.anhangData) {
+          throw new Error(`upload of ${f.name} refused: ${json.errorMessage || json.message || r.status}`);
+        }
+        for (const [k, v] of Object.entries(json.anhangData)) appends.push([k, String(v)]);
+        uploaded.push(f.name);
+      }
+      // "Hochladen starten" turns the uploaded files into rows.
+      const start = this.doc.getElementById(`${input.id}-upload`) as HTMLButtonElement | null;
+      if (!start || guard(start.value).name !== 'CreateMzbAnhangItems') {
+        throw new Error('no "Hochladen starten" (CreateMzbAnhangItems) next to the upload');
+      }
+      await this.post(start.value, {}, appends);
+      return { uploaded };
     },
 
     async deleteRow(group: string, index: number) {
