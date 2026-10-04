@@ -20,7 +20,7 @@
  */
 export function installDriver(): string {
   const w = window as any;
-  if (w.EO && w.EO.version === 10) return 'already installed';
+  if (w.EO && w.EO.version === 11) return 'already installed';
 
   // ── Safety ──────────────────────────────────────────────────────────────
   // ALLOWLIST: the only reqCmd names this engine may post. Anything else —
@@ -109,7 +109,7 @@ export function installDriver(): string {
   };
 
   const EO: any = {
-    version: 10,
+    version: 11,
     doc: document as Document,
     url: location.href,
 
@@ -461,7 +461,10 @@ export function installDriver(): string {
       const panel = Array.from(this.doc.querySelectorAll('nav, [class*=errorList]'))
         .map((e: any) => clean(e.innerText || e.textContent)).filter(t => /Fehler|Hinweis/.test(t));
       const result = (main.match(/(Erstattung|Nachzahlung|Gewinn|Verlust)[^:]{0,40}:\s*-?[\d.]+,\d{2}\s*€/g) || []);
-      return { ...r, ok: /keine Fehler/i.test(main), headline: main.slice(0, 700), result, panel: panel.slice(0, 2).map(t => t.slice(0, 3000)) };
+      // "Wenn keine Fehler vorhanden sind, …" appears in the hint text even when
+      // errors remain, so an explicit "noch Fehler" wins.
+      const ok = /keine Fehler/i.test(main) && !/noch Fehler vorhanden|Es sind Fehler vorhanden/i.test(main);
+      return { ...r, ok, headline: main.slice(0, 700), result, panel: panel.slice(0, 2).map(t => t.slice(0, 3000)) };
     },
 
     /**
@@ -558,7 +561,9 @@ export function installDriver(): string {
       if (!sel) throw new Error(`form "${slug}" has no year selection (${this.title()})`);
       // "<year>-v1" / "<year>-v_<year>" usually; some forms use the bare year.
       const opt = Array.from(sel.options).find(o => o.value.startsWith(`${year}-`))
-        ?? Array.from(sel.options).find(o => o.value === String(year));
+        ?? Array.from(sel.options).find(o => o.value === String(year))
+        // Forms without a tax year (Einspruch) offer a single form version, e.g. "23-v_23".
+        ?? (sel.options.length === 1 ? sel.options[0] : undefined);
       if (!opt) throw new Error(`year ${year} not offered for ${slug}: ${Array.from(sel.options).map(o => o.value).join(', ')}`);
       await this.press('Enter', { [sel.name]: opt.value });
       steps.push(this.url);
