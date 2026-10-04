@@ -80,6 +80,11 @@ export class ElsterBase {
     // networkidle waits and a 10 s selector timeout on every login.
     log.info('Opening certificate login...');
     await page.goto(PORTAL_URLS.loginCert, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // ELSTER first bounces through /eportal/javaScriptTest, which redirects by
+    // script. Touching the page before that settles fails with "detached Frame".
+    for (let i = 0; i < 40 && /javaScriptTest/.test(page.url()); i++) {
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 500 }).catch(() => {});
+    }
 
     const isLoggedIn = (u: string) => u.includes('mein-elster/startseite') || u.includes('eportal/mein-elster')
       || u.includes('eportal/meinelster');

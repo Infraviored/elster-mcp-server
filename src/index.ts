@@ -599,8 +599,12 @@ async function dispatch(name: string, args: any) {
     case 'elster_form_handoff_wait': {
       const w = await engine.waitHandoff(Math.min(Math.max(args.timeoutMinutes ?? 10, 0.1), 60) * 60000);
       if (!w.closed) return jsonResult({ ...w, note: 'Window still open; call elster_form_handoff_wait again.' });
-      const items = await submissions.list({});
-      return jsonResult({ ...w, newestSubmissions: items.slice(0, 3) });
+      try {
+        const items = await submissions.list({});
+        return jsonResult({ ...w, newestSubmissions: items.slice(0, 3) });
+      } catch (e) {
+        return jsonResult({ ...w, submissionsError: (e as Error).message, note: 'Window closed; read elster_submissions_list separately.' });
+      }
     }
 
     case 'elster_form_handoff':
