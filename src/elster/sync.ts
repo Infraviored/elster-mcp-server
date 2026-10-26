@@ -20,8 +20,12 @@ export interface InboxMessage {
   id: string;
   elsterId: string;
   subject: string;
+  /** Date shown in the inbox, as YYYY-MM-DD. */
   date: string;
+  read: boolean;
   pdfPath?: string;
+  /** Downloaded attachments (the actual Bescheid PDFs), one folder per message. */
+  attachments?: string[];
 }
 
 export class ElsterSync extends ElsterBase {
@@ -119,7 +123,12 @@ export class ElsterSync extends ElsterBase {
    * Lists messages in the ELSTER inbox ("Posteingang") and optionally downloads PDFs.
    * Each message returned can be looked up later by its `elsterId`.
    */
-  async syncInbox(opts: { downloadPdfs?: boolean; maxPages?: number } = {}): Promise<InboxMessage[]> {
+  async syncInbox(opts: {
+    downloadPdfs?: boolean;
+    downloadAttachments?: boolean;
+    elsterIds?: string[];
+    maxPages?: number;
+  } = {}): Promise<InboxMessage[]> {
     const maxPages = opts.maxPages ?? 20;
     log.info('Syncing ELSTER inbox...');
     const { page } = await this.initBrowser();
@@ -144,16 +153,26 @@ export class ElsterSync extends ElsterBase {
         if (messages.length === 0) break;
 
         for (const msg of messages) {
-          if (opts.downloadPdfs) {
+          if (opts.elsterIds?.length && !opts.elsterIds.includes(msg.elsterId)) continue;
+          if (opts.downloadPdfs || opts.downloadAttachments) {
             try {
-              const pdf = await this.downloadInboxPdf(page, msg, downloadDir);
-              if (pdf) msg.pdfPath = pdf;
+              if (await this.openInboxMessage(page, msg)) {
+                if (opts.downloadPdfs) {
+                  const pdf = await this.saveInboxMessagePdf(page, msg, downloadDir);
+                  if (pdf) msg.pdfPath = pdf;
+                }
+                if (opts.downloadAttachments) {
+                  msg.attachments = await this.downloadInboxAttachments(page, msg, downloadDir);
+                }
+                await this.closeInboxMessage(page);
+              }
             } catch (e: any) {
               log.warn(`Failed to download ${msg.elsterId}: ${e.message}`);
             }
           }
           collected.push(msg);
         }
+        if (opts.elsterIds?.length && opts.elsterIds.every(id => collected.some(m => m.elsterId === id))) break;
 
         const firstIdBefore = messages[0]?.id || '';
         const pageBtnClicked = await page.evaluate(() => {
@@ -251,16 +270,22 @@ export class ElsterSync extends ElsterBase {
           if (m) btnId = 'viewNachricht' + m[1];
         }
         if (!btnId) return null;
-        const subject = (viewBtn.querySelector('.interactive-icon__text') || viewBtn || row).textContent?.trim() || 'No subject';
+        // The button text starts with the read state ("gelesen"/"ungelesen").
+        const raw = ((viewBtn.querySelector('.interactive-icon__text') || viewBtn || row).textContent || '')
+          .replace(/\s+/g, ' ').trim();
+        const state = raw.match(/^(ungelesen|gelesen)\s*/i);
+        const subject = (state ? raw.slice(state[0].length) : raw) || 'No subject';
         const dateTd = Array.from(row.querySelectorAll('td')).find(td => /\d{2}\.\d{2}\.\d{4}/.test(td.textContent || ''));
-        let date = new Date();
         const m = dateTd?.textContent?.match(/(\d{2})\.(\d{2})\.(\d{4})/);
-        if (m) date = new Date(+m[3], +m[2] - 1, +m[1]);
+        // Kept as the calendar date ELSTER shows; toISOString() of a local
+        // midnight would shift it to the previous day.
+        const date = m ? `${m[3]}-${m[2]}-${m[1]}` : '';
         return {
           id: btnId,
           elsterId: btnId.replace(/\D/g, ''),
           subject,
-          date: date.toISOString(),
+          date,
+          read: !state || state[1].toLowerCase() === 'gelesen',
         };
       }).filter((m): m is InboxMessage => m !== null);
     });
@@ -315,61 +340,105 @@ export class ElsterSync extends ElsterBase {
     }
   }
 
-  private async downloadInboxPdf(page: Page, msg: InboxMessage, downloadDir: string): Promise<string | null> {
-    const safe = msg.subject.replace(/[^a-zA-Z0-9äöüÄÖÜ_-]/g, '_').substring(0, 60);
-    const fileName = `elster_inbox_${msg.elsterId}_${safe}.pdf`;
-    const fullPath = path.join(downloadDir, fileName);
-    try {
-      const exists = await page.evaluate((id) => !!document.getElementById(id), msg.id);
-      if (!exists) return null;
-      await page.evaluate((id) => document.getElementById(id)!.scrollIntoView({ block: 'center' }), msg.id);
-      await page.click(`#${msg.id}`).catch(() => {});
-
-      let ready = false;
-      for (let i = 0; i < 15; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        ready = await page.evaluate(() => {
-          const b = document.querySelector<HTMLElement>('.modal--openOnLoad');
-          return !!b && b.getBoundingClientRect().height > 0 && (b.textContent?.trim()?.length || 0) > 150;
-        });
-        if (ready) break;
-      }
-      if (!ready) return null;
-
-      const wrapper = await page.evaluate(() => {
+  /** Opens a message's modal in the inbox list. False if it did not render. */
+  private async openInboxMessage(page: Page, msg: InboxMessage): Promise<boolean> {
+    const exists = await page.evaluate((id) => !!document.getElementById(id), msg.id);
+    if (!exists) return false;
+    await page.evaluate((id) => document.getElementById(id)!.scrollIntoView({ block: 'center' }), msg.id);
+    await page.click(`#${msg.id}`).catch(() => {});
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const ready = await page.evaluate(() => {
         const b = document.querySelector<HTMLElement>('.modal--openOnLoad');
-        const w = b?.querySelector<HTMLElement>('.modal__wrapper') || b;
-        if (!w || (w.textContent?.trim()?.length || 0) < 100) return '';
-        return w.innerHTML || '';
+        return !!b && b.getBoundingClientRect().height > 0 && (b.textContent?.trim()?.length || 0) > 150;
       });
-      if (!wrapper) return null;
+      if (ready) return true;
+    }
+    return false;
+  }
 
-      const title = msg.subject || 'ELSTER Nachricht';
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title.replace(/[<>]/g, '')}</title>
+  private async closeInboxMessage(page: Page): Promise<void> {
+    await page.keyboard.press('Escape').catch(() => {});
+    await new Promise(r => setTimeout(r, 800));
+  }
+
+  /** Prints the open message's text (not its attachments) to a PDF. */
+  private async saveInboxMessagePdf(page: Page, msg: InboxMessage, downloadDir: string): Promise<string | null> {
+    const safe = msg.subject.replace(/[^a-zA-Z0-9äöüÄÖÜ_-]/g, '_').substring(0, 60);
+    const fullPath = path.join(downloadDir, `elster_inbox_${msg.elsterId}_${safe}.pdf`);
+    const wrapper = await page.evaluate(() => {
+      const b = document.querySelector<HTMLElement>('.modal--openOnLoad');
+      const w = b?.querySelector<HTMLElement>('.modal__wrapper') || b;
+      if (!w || (w.textContent?.trim()?.length || 0) < 100) return '';
+      return w.innerHTML || '';
+    });
+    if (!wrapper) return null;
+
+    const title = (msg.subject || 'ELSTER Nachricht').replace(/[<>]/g, '');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>body{font-family:Arial,sans-serif;padding:30px;font-size:14px;line-height:1.6}
 h1{font-size:20px;border-bottom:2px solid #333;padding-bottom:10px}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px}
 button,.btn{display:none!important}</style></head><body>
-<h1>${title.replace(/[<>]/g, '')}</h1>
-<p style="color:#666;font-size:12px">Datum: ${new Date(msg.date).toLocaleDateString('de-DE')}</p>
+<h1>${title}</h1>
+<p style="color:#666;font-size:12px">Datum: ${msg.date}</p>
 ${wrapper}</body></html>`;
 
-      const newPage = await page.browser().newPage();
-      try {
-        await newPage.setContent(html, { waitUntil: 'networkidle0' });
-        await newPage.pdf({
-          path: fullPath, format: 'A4', printBackground: false,
-          margin: { top: '20mm', bottom: '20mm', left: '20mm', right: '20mm' },
-        });
-      } finally { await newPage.close(); }
+    const newPage = await page.browser().newPage();
+    try {
+      await newPage.setContent(html, { waitUntil: 'networkidle0' });
+      await newPage.pdf({
+        path: fullPath, format: 'A4', printBackground: false,
+        margin: { top: '20mm', bottom: '20mm', left: '20mm', right: '20mm' },
+      });
+    } finally { await newPage.close(); }
+    return fs.existsSync(fullPath) && fs.statSync(fullPath).size > 500 ? fullPath : null;
+  }
 
-      // close the modal so next iteration works
-      await page.keyboard.press('Escape').catch(() => {});
-      await new Promise(r => setTimeout(r, 800));
+  /**
+   * Downloads the attachments of the open message — for a Bescheid, the
+   * Bescheid itself; the message text only says one is attached.
+   *
+   * Each attachment is a button `<name>AnhangHerunterladen` carrying
+   * `DecryptModalCommand{nachrichtId, dokumentId}`. The file arrives
+   * encrypted; ELSTER's own page script decrypts it via /eportal/rpc with the
+   * logged-in certificate and then triggers a browser download. So the button
+   * is clicked in the real page and the file is picked up from disk.
+   */
+  private async downloadInboxAttachments(page: Page, msg: InboxMessage, downloadDir: string): Promise<string[]> {
+    const dir = path.join(downloadDir, 'inbox', msg.elsterId);
+    fs.mkdirSync(dir, { recursive: true });
+    const cdp = await page.browser().target().createCDPSession();
+    // 'allow' keeps ELSTER's file name; initBrowser's 'allowAndName' would store a GUID.
+    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dir, eventsEnabled: true });
 
-      return fs.existsSync(fullPath) && fs.statSync(fullPath).size > 500 ? fullPath : null;
-    } catch {
-      return null;
+    const buttons = await page.evaluate(() =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>('.modal--openOnLoad [id$="AnhangHerunterladen"]'))
+        .map(b => b.id));
+    const saved: string[] = [];
+    for (const id of buttons) {
+      const before = new Set(fs.readdirSync(dir));
+      await page.evaluate((i) => document.getElementById(i)?.click(), id);
+      const file = await this.waitForNewFile(dir, before, 45000);
+      if (file) saved.push(file);
+      else log.warn(`Attachment ${id} of message ${msg.elsterId} did not arrive`);
     }
+    await cdp.detach().catch(() => {});
+    return saved;
+  }
+
+  /** Waits for a finished download (no .crdownload, size stable) not in `before`. */
+  private async waitForNewFile(dir: string, before: Set<string>, timeoutMs: number): Promise<string | null> {
+    let last = -1;
+    for (let t = 0; t < timeoutMs; t += 500) {
+      await new Promise(r => setTimeout(r, 500));
+      const fresh = fs.readdirSync(dir).filter(f => !before.has(f));
+      if (!fresh.length || fresh.some(f => f.endsWith('.crdownload'))) continue;
+      const full = path.join(dir, fresh[0]);
+      const size = fs.statSync(full).size;
+      if (size > 0 && size === last) return full;
+      last = size;
+    }
+    return null;
   }
 }

@@ -219,11 +219,17 @@ const TOOLS: Tool[] = [
   },
   {
     name: 'elster_sync_inbox',
-    description: 'Reads ELSTER inbox messages ("Posteingang"). Optionally downloads each message as PDF.',
+    description:
+      'Reads ELSTER inbox messages ("Posteingang"): elsterId, subject, date, read. A Bescheid arrives as a '
+      + 'short message with the Bescheid itself as an attachment: set downloadAttachments to fetch it '
+      + '(decrypted by ELSTER\'s own page, saved per message under <downloadDir>/inbox/<elsterId>/). '
+      + 'downloadPdfs prints the message text. Restrict both to some messages with elsterIds. Read-only.',
     inputSchema: {
       type: 'object',
       properties: {
-        downloadPdfs: { type: 'boolean', default: false },
+        downloadPdfs: { type: 'boolean', default: false, description: 'Print each message text to a PDF.' },
+        downloadAttachments: { type: 'boolean', default: false, description: 'Download each message\'s attachments (e.g. the Bescheid PDF).' },
+        elsterIds: { type: 'array', items: { type: 'string' }, description: 'Only these messages (elsterId from a previous call).' },
         maxPages: { type: 'integer', default: 20 },
       },
       additionalProperties: false,
@@ -563,6 +569,8 @@ async function dispatch(name: string, args: any) {
     case 'elster_sync_inbox': {
       const items = await sync.syncInbox({
         downloadPdfs: args.downloadPdfs,
+        downloadAttachments: args.downloadAttachments,
+        elsterIds: args.elsterIds,
         maxPages: args.maxPages,
       });
       return jsonResult({ count: items.length, items });

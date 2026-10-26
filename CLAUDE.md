@@ -83,6 +83,16 @@ fields. The value cell's `<span data-name="id-N-ArbL-…-E0200204_usb1_1-1-1-1">
 own field id**; its `E…` Kennzahl is what `elster_form_set` takes, so a parsed protocol can
 be fed straight back into a new filing.
 
+### Inbox attachments (`sync.ts`)
+
+A Bescheid in the "Posteingang" is a short message; the Bescheid itself is an attachment. In the
+open message modal each attachment is a button `<file>AnhangHerunterladen` with
+`DecryptModalCommand{nachrichtId:{type:"p",id},dokumentId,…}`. The file arrives encrypted and
+ELSTER's own page script decrypts it via `/eportal/rpc` with the logged-in certificate, then
+triggers a browser download. So `downloadInboxAttachments` clicks the button in the real page and
+picks the file up from `<downloadDir>/inbox/<elsterId>/` (download behaviour `allow`, which keeps
+ELSTER's file name). Replaying the command with `fetch` would only return the encrypted payload.
+
 Two parsing traps, both already handled: header values contain colons
 ("Eingang auf Server: 31.07.2025, 23:32:07"), so meta labels are bounded by the *next label*,
 not the next colon; and that scan must run on a copy with `.eoprint__page` /
